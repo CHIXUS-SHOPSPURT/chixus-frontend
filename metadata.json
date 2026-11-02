@@ -1,0 +1,6 @@
+{
+  "name": "Visual Fault Inspector",
+  "description": "CHIXUS sovereign silver metallic decentralized electronics verification network, optical solder fault inspector, and operator profile matrix.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

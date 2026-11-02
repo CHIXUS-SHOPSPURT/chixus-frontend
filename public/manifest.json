@@ -1,0 +1,32 @@
+{
+  "id": "/",
+  "name": "CHIXUS Visual Fault Inspector",
+  "short_name": "CHIXUS",
+  "description": "CHIXUS sovereign decentralized electronics verification network, optical solder fault inspector, and operator profile matrix.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#080c14",
+  "background_color": "#080c14",
+  "icons": [
+    {
+      "src": "/pwa-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-maskable-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

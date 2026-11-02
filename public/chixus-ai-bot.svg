@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <radialGradient id="botBg" cx="50%" cy="50%" r="55%">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#020617" />
+    </radialGradient>
+    <linearGradient id="cyanGlow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="50%" stop-color="#0ea5e9" />
+      <stop offset="100%" stop-color="#0284c7" />
+    </linearGradient>
+    <linearGradient id="metalChassis" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#334155" />
+      <stop offset="50%" stop-color="#1e293b" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+  </defs>
+
+  <!-- Outer Rounded Frame -->
+  <rect width="512" height="512" rx="120" fill="url(#botBg)" />
+  <rect width="488" height="488" x="12" y="12" rx="110" fill="none" stroke="#38bdf8" stroke-width="6" stroke-opacity="0.4" />
+
+  <!-- Circuit Traces -->
+  <g stroke="#38bdf8" stroke-width="3" stroke-opacity="0.35" stroke-linecap="round">
+    <line x1="256" y1="30" x2="256" y2="85" />
+    <line x1="256" y1="427" x2="256" y2="482" />
+    <line x1="30" y1="256" x2="85" y2="256" />
+    <line x1="427" y1="256" x2="482" y2="256" />
+  </g>
+
+  <!-- Hexagonal Sovereign Shield -->
+  <polygon points="256,64 422,160 422,352 256,448 90,352 90,160" 
+           fill="#090d16" stroke="url(#cyanGlow)" stroke-width="10" stroke-linejoin="round" />
+
+  <!-- Bot Antennae -->
+  <line x1="196" y1="145" x2="176" y2="105" stroke="#38bdf8" stroke-width="8" stroke-linecap="round" />
+  <circle cx="172" cy="100" r="12" fill="#38bdf8" />
+  <line x1="316" y1="145" x2="336" y2="105" stroke="#38bdf8" stroke-width="8" stroke-linecap="round" />
+  <circle cx="340" cy="100" r="12" fill="#38bdf8" />
+
+  <!-- Bot Ear Modules -->
+  <rect x="114" y="216" width="24" height="72" rx="10" fill="#38bdf8" />
+  <rect x="374" y="216" width="24" height="72" rx="10" fill="#38bdf8" />
+
+  <!-- Bot Head Chassis -->
+  <rect x="136" y="145" width="240" height="210" rx="48" fill="url(#metalChassis)" stroke="#38bdf8" stroke-width="6" />
+
+  <!-- Forehead CHIXUS Core Badge -->
+  <polygon points="256,162 276,174 276,196 256,208 236,196 236,174" fill="#020617" stroke="#34d399" stroke-width="3" />
+  <circle cx="256" cy="185" r="5" fill="#34d399" />
+
+  <!-- Cybernetic Optical Visor -->
+  <rect x="164" y="218" width="184" height="68" rx="26" fill="#020617" stroke="#38bdf8" stroke-width="4" />
+  
+  <!-- Glowing Bot Eyes -->
+  <circle cx="212" cy="252" r="18" fill="#38bdf8" />
+  <circle cx="206" cy="246" r="6" fill="#ffffff" />
+  <circle cx="300" cy="252" r="18" fill="#38bdf8" />
+  <circle cx="294" cy="246" r="6" fill="#ffffff" />
+
+  <!-- Voice Synthesizer Grille -->
+  <g fill="#34d399">
+    <rect x="206" y="308" width="10" height="18" rx="5" />
+    <rect x="224" y="302" width="10" height="30" rx="5" />
+    <rect x="242" y="298" width="10" height="38" rx="5" />
+    <rect x="260" y="302" width="10" height="30" rx="5" />
+    <rect x="278" y="298" width="10" height="38" rx="5" />
+    <rect x="296" y="308" width="10" height="18" rx="5" />
+  </g>
+
+  <!-- CHIXUS AI Label Tag -->
+  <rect x="176" y="374" width="160" height="34" rx="10" fill="#0284c7" stroke="#38bdf8" stroke-width="3" />
+  <text x="256" y="396" font-family="monospace" font-weight="900" font-size="19" fill="#ffffff" text-anchor="middle" letter-spacing="2">CHIXUS AI</text>
+</svg>
