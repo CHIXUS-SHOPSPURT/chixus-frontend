@@ -1,0 +1,133 @@
+/**
+ * CHIXUS Sovereign Decentralized Verification Network
+ * Official Platform Policies & Compliance Framework
+ * 
+ * Version: v1.23.4
+ * Includes:
+ * 1. Privacy Policy
+ * 2. High-Voltage & Hardware Safety Policy
+ * 3. Terms and Conditions of Network Service
+ */
+
+export interface PolicyDocument {
+  id: 'privacy' | 'safety' | 'terms';
+  title: string;
+  version: string;
+  lastUpdated: string;
+  summary: string;
+  content: string;
+}
+
+export const CHIXUS_PRIVACY_POLICY: PolicyDocument = {
+  id: 'privacy',
+  title: 'CHIXUS Privacy Policy',
+  version: 'v1.23.4',
+  lastUpdated: 'November 2026',
+  summary: 'How CHIXUS collects, secures, encrypts, and retains operator profile data, optical PCB captures, and telemetry logs.',
+  content: `CHIXUS SOVEREIGN PRIVACY POLICY
+Effective Date: November 2026
+Entity Reference: CHIXUS Sovereign Verification Network [PLACEHOLDER: Legal Registration Entity]
+
+SECTION 1: SCOPE & SOVEREIGN PRINCIPLES
+This Privacy Policy governs how the CHIXUS platform ("Network", "we", "us") collects, encrypts, processes, and protects your information when accessing our optical fault inspection applications, telemetry grids, and operator interfaces. We operate on zero-knowledge, data-minimization, and decentralized operator sovereignty principles.
+
+SECTION 2: INFORMATION WE COLLECT
+We collect only the technical telemetry strictly required to deliver hardware verification services:
+- Operator Identity & Profile Data: Operator Node ID (e.g., CHI-XXXX-XX), chosen display name, sector/location, professional headline, biography, and profile/cover graphics. Contact details such as email addresses and phone numbers are encrypted and never made publicly searchable unless explicitly marked public by the operator.
+- Optical Inspection Imagery & Media: High-resolution circuit board photographs, live video stream frames, optical scan captures, thermal notes, and diagnostic annotations uploaded for AI analysis.
+- Hardware Telemetry & Metrics: Scan timestamps, solder joint anomaly classifications, void ratios, IPC Class 3 compliance metrics, and mesh connection logs.
+- Zero-Energy Safety Verification Logs: Voltage measurement logs, multimeter self-test confirmations, and Live-Dead-Live (LDL) verification tokens.
+
+SECTION 3: AI PROCESSING & THIRD-PARTY NEURAL PROVIDERS
+- Optical imagery submitted for component classification and fault isolation is processed through localized edge neural models and secure server-side AI providers (including Google Gemini and DeepSeek models).
+- Media submitted to AI models is transmitted via encrypted HTTPS TLS 1.3 transport solely for real-time inference, anomaly detection, and voice narrative generation.
+- Your inspection imagery and proprietary PCB schematics are not utilized for public foundation model training without explicit written enterprise authorization.
+
+SECTION 4: DATA STORAGE, CLOUD SYNCHRONIZATION & SECURITY
+- All active inspection logs, cryptographic hashes, and media links are stored in high-durability cloud object storage and PostgreSQL relational database systems protected by AES-256 server-side encryption.
+- Client-side offline ledgers utilize browser-isolated IndexedDB (localForage) to guarantee operation in zero-connectivity field environments.
+- Synchronization across devices is cryptographically authenticated via your sovereign credentials and 4-digit security PIN.
+
+SECTION 5: DATA RETENTION & MANDATORY 4-DAY ANTI-TAMPER LOCK
+- To satisfy aerospace, industrial, and IPC-A-610 quality audit requirements, every inspection capture and diagnostic ledger entry is subjected to a mandatory 4-day (96-hour) anti-tamper lock starting from the server-recorded timestamp.
+- During these 4 complete days, diagnostic media cannot be manually purged by users or operators.
+- Upon expiration of the 4-day retention cycle, manual deletion capability is unlocked. The Network does not automatically erase your records upon expiration; the operator retains custody over when to archive or purge their media.
+
+SECTION 6: ACCOUNT DELETION & OPERATOR RIGHTS
+- Operators possess the sovereign right to request complete account decommissioning, credential invalidation, and data removal subject to active regulatory audit locks.
+- To exercise your rights under GDPR, CCPA, or applicable data sovereignty regulations, access the Help Center or contact support at [PLACEHOLDER: privacy@chixus.network].`
+};
+
+export const CHIXUS_SAFETY_POLICY: PolicyDocument = {
+  id: 'safety',
+  title: 'CHIXUS Safety & High-Voltage Policy',
+  version: 'v1.23.4',
+  lastUpdated: 'November 2026',
+  summary: 'Mandatory zero-energy verification protocols, high-voltage precautions, and AI diagnostic advisory limitations.',
+  content: `CHIXUS HARDWARE SAFETY & ZERO-ENERGY POLICY
+Effective Date: November 2026
+Standard Compliance: NFPA 70E / IEEE 1584 / IPC-A-610G Class 3
+
+SECTION 1: ADVISORY NATURE OF AI DIAGNOSTICS
+- All automated optical inspection (AOI) outputs, solder defect tags, component classifications, and voice explainer narratives generated by CHIXUS are advisory technical recommendations, not guaranteed professional engineering certifications.
+- AI models can misclassify optical reflections, conformal coatings, or flux residues. Operators must always exercise independent professional engineering judgment before executing rework, soldering, or component replacement.
+
+SECTION 2: PROHIBITION OF DANGEROUS UNQUALIFIED REPAIRS
+- Operators must never perform high-voltage, mains AC, or hazardous electronic repairs based solely on AI diagnostics or voice recommendations.
+- Any equipment operating at voltages exceeding 50V AC RMS or 120V ripple-free DC, or containing hazardous stored energy, must only be serviced by certified, licensed electrical technicians equipped with appropriate Personal Protective Equipment (PPE).
+
+SECTION 3: MANDATORY LIVE-DEAD-LIVE (LDL) ZERO-ENERGY PROTOCOL
+Prior to placing hands, soldering irons, desoldering wick, or conductive tools on any electronic assembly, operators must execute the three-step LDL protocol:
+1. Live Test: Verify your digital multimeter on a known, verified energized voltage source.
+2. Dead Test: Probe the target circuit board rails, primary DC bus, and secondary decoupling pads to verify 0.00V zero-energy state.
+3. Live Re-Test: Re-test your multimeter on the known energized source to confirm instrument operational integrity.
+
+SECTION 4: CAPACITOR DISCHARGE PROTOCOL
+- Primary switch-mode power supply (SMPS) filter capacitors can store lethal electrical charges hours after disconnection from mains power.
+- Always bleed high-voltage electrolytic capacitors through an appropriately rated ceramic power resistor (e.g., 1kΩ / 10W) and confirm voltage drop below 5.0V DC prior to inspection or physical handling.
+
+SECTION 5: REPORTING HAZARDOUS FIELD CONDITIONS
+- If the optical inspector detects thermal discoloration, burned traces, bulging capacitor tops, or dielectric arcing marks, immediately de-energize the assembly, tag out the power source, and isolate the board in a fire-retardant ESD container.`
+};
+
+export const CHIXUS_TERMS_AND_CONDITIONS: PolicyDocument = {
+  id: 'terms',
+  title: 'CHIXUS Terms & Conditions',
+  version: 'v1.23.4',
+  lastUpdated: 'November 2026',
+  summary: 'User obligations, non-custodial credential custody, intellectual property, platform uptime, and liability limitations.',
+  content: `CHIXUS NETWORK TERMS AND CONDITIONS
+Effective Date: November 2026
+Platform Jurisdiction: Sovereign Decentralized Network
+
+SECTION 1: ACCEPTANCE OF TERMS
+By creating an Operator Node ID, accessing the CHIXUS visual fault inspection tools, connecting to the decentralized mesh, or utilizing the Voice Explainer system, you agree to be bound by these Terms and Conditions. If you do not agree, do not access the platform.
+
+SECTION 2: SOVEREIGN CREDENTIAL CUSTODY & NODE RESPONSIBILITIES
+- CHIXUS enforces decentralized operator custody. Your Node ID and 4-digit PIN represent your non-custodial authorization key.
+- The platform maintains no centralized human backdoor capable of recovering lost PINs without verified multi-factor ownership proofs.
+- You are solely responsible for maintaining the confidentiality and physical custody of your credentials and all activities executed under your Node ID.
+
+SECTION 3: ACCEPTABLE PLATFORM USE & IP RIGHTS
+- Authorized Use: You may use CHIXUS for lawful quality control, circuit inspection, IPC Class 3 soldering verification, and technical collaboration.
+- Uploaded Content: You retain full ownership and intellectual property rights in all circuit board photographs, schematics, and inspection media you upload. You grant CHIXUS a non-exclusive, worldwide license solely to process, host, and transmit that media for your inspection workflow.
+- Prohibited Conduct: You shall not upload malware, reverse engineer closed model weights, falsify compliance records, or use the inspection system to bypass industrial hardware safety regulations.
+
+SECTION 4: PLATFORM AVAILABILITY & DISCLAIMERS
+- CHIXUS is provided on an "AS IS" and "AS AVAILABLE" basis. While we strive for 99.9% uptime, we do not warrant that optical inference, cloud synchronization, or voice playback will be uninterrupted or error-free.
+- Telemetry synchronization may be delayed in field environments with intermittent connectivity; on-device IndexedDB caching provides temporary continuity.
+
+SECTION 5: LIMITATION OF LIABILITY
+- To the maximum extent permitted by applicable law, CHIXUS, its maintainers, and contributors shall not be liable for any direct, indirect, incidental, or consequential damages resulting from circuit rework, component burnout, personal injury from electrical shock, loss of data, or operational downtime.
+- In all circumstances, our maximum aggregate liability shall not exceed the amount paid by you, if any, for accessing the platform during the three (3) months preceding the incident.
+
+SECTION 6: ACCOUNT SUSPENSION & POLICY UPDATES
+- We reserve the right to suspend or decommission nodes that engage in automated abuse, denial-of-service, or fraudulent verification falsification.
+- We may update these policies periodically. Continued usage of the platform constitutes acceptance of revised terms. For questions, please reach out through the CHIXUS Help Center.`
+};
+
+export const ALL_POLICIES: Record<string, PolicyDocument> = {
+  privacy: CHIXUS_PRIVACY_POLICY,
+  safety: CHIXUS_SAFETY_POLICY,
+  terms: CHIXUS_TERMS_AND_CONDITIONS
+};

@@ -1022,11 +1022,38 @@ export function buildSpokenTribeNarrative(
     details: string;
     detectedFaults?: string;
     remediationSteps?: string;
-  } | null
+  } | null,
+  liveDiagnostic?: any
 ): { spokenText: string; bcp47: string; matchedTribeLabel: string } {
-  const pack = getLocalizedTribeDiagnostics(tribeInput, preAi, Boolean(scanResult));
+  const pack = getLocalizedTribeDiagnostics(tribeInput, preAi, Boolean(scanResult || liveDiagnostic));
+
+  let spokenContent = '';
+  if (scanResult) {
+    const fault = scanResult.detectedFaults || scanResult.label || 'Solder anomaly detected';
+    const explanation = scanResult.details || 'Component optical analysis verified';
+    const fix = scanResult.remediationSteps || 'Check solder joint clearances and apply flux before rework';
+    const conf = scanResult.confidence || '99 percent';
+
+    spokenContent = `Inspection completed. Circuit defect identified: ${fault}. Anomaly details: ${explanation}. Actionable repair: ${fix}. Safety notice: Verify zero-energy state and disconnect power before soldering. Confirmed with ${conf} confidence.`;
+  } else if (liveDiagnostic && liveDiagnostic.vision_analysis) {
+    const fault = liveDiagnostic.vision_analysis.detected_anomaly || liveDiagnostic.vision_analysis.fault_tag || 'Live solder anomaly';
+    const comp = liveDiagnostic.vision_analysis.component_identifier || 'hardware component';
+    const conf = liveDiagnostic.vision_analysis.vision_confidence_score
+      ? `${Math.round(liveDiagnostic.vision_analysis.vision_confidence_score * 100)} percent`
+      : '98 percent';
+    const repairSteps = liveDiagnostic.circuit_reasoning?.repair_steps;
+    const fix = Array.isArray(repairSteps) && repairSteps.length > 0
+      ? repairSteps.join(', ')
+      : liveDiagnostic.circuit_reasoning?.remediation_action || 'Prepare rework area and verify electrical isolation';
+
+    spokenContent = `Live inspection update. Circuit defect identified on ${comp}: ${fault}. Remediation recommendation: ${fix}. Verified with ${conf} accuracy. Disconnect power before rework.`;
+  } else {
+    // Before inspection / no snapshot taken yet
+    spokenContent = 'Hello, welcome to chixus visual inspection. Position your camera over the circuit board and tap Run Verification to begin the inspection workflow.';
+  }
+
   return {
-    spokenText: sanitizeTextForSpeech(pack.spokenText),
+    spokenText: sanitizeTextForSpeech(spokenContent),
     bcp47: pack.bcp47,
     matchedTribeLabel: pack.matchedTribeLabel
   };
@@ -1852,7 +1879,7 @@ The optical sensor analyzed the geometry, luminance, and surface spectrum of you
    • LinkedIn-Style Repost to CHIXUS Feed: Type optional thoughts and tap "Repost with your thoughts", or tap "Instant Repost" to immediately repost the card to the Feed in LinkedIn style.
    • Send to Operator in CHIXUS Messages: Tap any operator contact or enter their Node ID to send the post directly into their chat inbox.
    • Bottom Action Buttons:
-     - Tap "Educate & Read" to have CHIXUS AI read the post aloud and display a full educational breakdown right on the post card.
+     - Tap "Educate & Read" to have Qorvex read the post aloud and display a full educational breakdown right on the post card.
      - Tap "Device Share" to share externally via your device's native share sheet.
      - Tap "Copy Link" to copy the post text and link to your clipboard.`;
   }
@@ -2039,7 +2066,7 @@ Chinaza Success Joseph designed CHIXUS as a Visual Fault Inspector, Engineering 
 • Smart Pre-AI Object Detection that distinguishes live camera snapshots from uploaded photos.
 • Multilingual Voice Explainer supporting NG-PIDGIN, NG-HAUSA, EN-ENGLISH, and global languages.
 • Fraud-Proof Telemetry Ledger with PDF & CSV export and a 4-Day (96-Hour) anti-tamper retention lock.
-• Operator Networking with permanent Node IDs (${myId}), LinkedIn-style reposting, structured peer endorsements, and CHIXUS AI.`;
+• Operator Networking with permanent Node IDs (${myId}), LinkedIn-style reposting, structured peer endorsements, and Qorvex.`;
   }
 
   // 14. DIRECT MATH / CALCULATIONS
@@ -2093,7 +2120,7 @@ Chinaza Success Joseph designed CHIXUS as a Visual Fault Inspector, Engineering 
     /^(hi|hello|hey|good morning|good afternoon|good evening|greetings|yo|sup|hola|bonjour)\b/i.test(q) &&
     q.split(/\s+/).length <= 5
   ) {
-    return `Hello ${greetName}! I am CHIXUS AI. Ask me any question on any topic — general knowledge, science, math, daily life, Electrical, Electronics, Mechanical engineering, or anything about the CHIXUS app!`;
+    return `Hello ${greetName}! I am Qorvex. Ask me any question on any topic — general knowledge, science, math, daily life, Electrical, Electronics, Mechanical engineering, or anything about the CHIXUS app!`;
   }
 
   // 17. COMPREHENSIVE INTELLIGENT SYNTHESIS FOR ANY ARBITRARY QUESTION (OFFLINE RESILIENCE)

@@ -2,7 +2,7 @@
  * CHIXUS Intelligent Knowledge & Diagnostics Engine for Help Center
  * Answers queries based on Global App State: Settings, Operator ID, Profile, Faults & Scans, and Help Guides.
  * Operates client-side with zero network dependency (100% resilient on Netlify and offline).
- * Explicitly recommends 'Submit a Ticket' to chixus.support@gmail.com for questions outside knowledge.
+ * Explicitly recommends 'Submit a Ticket' via the in-app Support Dispatch for questions outside knowledge.
  */
 
 export interface HelpCenterAppContext {
@@ -50,7 +50,7 @@ export function getHelpCenterKnowledgeAnswer(
   const accuracy = context?.scanAccuracy || '99.4%';
 
   if (!q) {
-    return `Hello ${userName}! I am CHIXUS AI, your integrated Technical & Settings Assistant. 
+    return `Hello ${userName}! I am Qorvex, your integrated Technical & Settings Assistant. 
 
 You can ask me about:
 • Your Operator ID, profile credentials, and Public/Private visibility
@@ -241,8 +241,8 @@ To switch language: Open Settings → "Accessibility, display, and languages" �
 1. Autonomous On-Device Failover: When deployed on Netlify (which hosts static assets without a live Node server), CHIXUS automatically detects the environment and executes all security verification, code generation, and AI knowledge parsing directly on-device.
 2. No Blocking Errors: Registration and verification will never fail with a network error. If a remote backend is unavailable, the on-device verification engine generates your 6-digit verification code, issues a confirmation toast, validates the code, and transitions you smoothly to create your 4-digit password.
 3. System Email Architecture:
-   • Verification & Notifications: Handled via chixus.system@gmail.com.
-   • Help Center & Engineering Inquiries: Handled via chixus.support@gmail.com.`;
+   • Verification & Notifications: Handled via autonomous verification gateway.
+   • Help Center & Engineering Inquiries: Handled via secure in-app encrypted support ticketing.`;
   }
 
   // =========================================================================
@@ -347,14 +347,12 @@ All tiers include neural solder fault detection, local IndexedDB tamper-evident 
   ) {
     return `Hello ${userName}! Here is how to contact engineering support or submit a ticket:
 
-• Official Support Inbox: chixus.support@gmail.com
-• System Notification Inbox: chixus.system@gmail.com
 • Submit a Ticket: Click the "Submit a Ticket" or "Contact Us" button below to open the official ticket form.
 • You can specify:
   1. Category: General Support, Hardware Diagnostic Ticket, or Platform Feedback
   2. Subject & Description: Detailed breakdown of the hardware or account symptom
   3. Attachments: Circuit schematics, telemetry logs, or optical solder pictures
-Our engineering team reviews all tickets submitted to chixus.support@gmail.com promptly.`;
+Our engineering team reviews all tickets submitted through the encrypted support dispatch queue promptly.`;
   }
 
   // =========================================================================
@@ -367,7 +365,7 @@ Our engineering team reviews all tickets submitted to chixus.support@gmail.com p
     q.includes('what can you do') ||
     q.includes('who are you')
   ) {
-    return `Hello ${userName}! I am CHIXUS AI, your real-time Hardware & Settings Assistant.
+    return `Hello ${userName}! I am Qorvex, your real-time Hardware & Settings Assistant.
 
 I am connected to your live profile (${opId}) and local diagnostic state. I can assist you with:
 • Your Operator ID, profile, and security settings
@@ -375,11 +373,11 @@ I am connected to your live profile (${opId}) and local diagnostic state. I can 
 • Settings customization (Themes, Languages, 4-digit PIN, Notifications)
 • Pricing matrix, MARIES memory, and Netlify deployment questions
 
-If you need custom engineering assistance, tap "Submit a Ticket" below to message chixus.support@gmail.com.`;
+If you need custom engineering assistance, tap "Submit a Ticket" below to dispatch your case directly to our engineering desk.`;
   }
 
   // Explicit instruction to suggest "Submit a Ticket" if outside knowledge base
   return `Hello ${userName}! This specific query is outside the scope of the CHIXUS Settings, Operator ID records, Fault Diagnostics, and Platform Documentation.
 
-If you have an unlisted technical problem or need direct engineering assistance, please tap "Submit a Ticket" below or send an email to chixus.support@gmail.com so our engineering support team can review your case directly.`;
+If you have an unlisted technical problem or need direct engineering assistance, please tap "Submit a Ticket" below so our engineering support team can review your case directly.`;
 }

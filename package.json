@@ -1,7 +1,7 @@
 {
   "name": "visual-fault-inspector",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.23.4",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",

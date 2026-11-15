@@ -101,3 +101,99 @@ export interface ZeroEnergySafetyVerificationResponse {
   warning_message?: string;
 }
 
+// ==================================================
+// PERMANENT ACCOUNT IDENTITY, SETTINGS & VERIFICATION
+// ==================================================
+export type AiAccessLevel =
+  | 'feed'
+  | 'inspect'
+  | 'profile'
+  | 'none'
+  | 'everything'
+  | 'no_message_allow_other';
+
+export interface EmailAlertPreferences {
+  weeklyReport: boolean;
+  verifiedOnly: boolean;
+  newUpdate: boolean;
+  tips: boolean;
+}
+
+export interface InAppNotificationPreferences {
+  popupToast: boolean;
+  appUpdate: boolean;
+  directMessage: boolean;
+  contactJoin: boolean;
+}
+
+export interface UserPreferencesPayload {
+  emailAlerts: EmailAlertPreferences;
+  inAppAlerts: InAppNotificationPreferences;
+  soundFeedback: boolean;
+  isIdPublic: boolean;
+  aiAccessLevel: AiAccessLevel;
+  theme: 'dark' | 'white' | 'system';
+  language: string;
+  updatedAt?: string;
+}
+
+export interface PermanentUserIdentity {
+  internal_id: string;
+  chixus_id: string;
+  phone_number: string;
+  email: string;
+  full_name: string;
+  username: string;
+  location: string;
+  headline: string;
+  country: string;
+  avatar_url?: string;
+  cover_url?: string;
+  summary?: string;
+  inspections_conducted?: number;
+  faults_isolated?: number;
+  ai_scan_accuracy?: string;
+  is_id_public?: boolean;
+  ai_access_level?: AiAccessLevel;
+  pending_phone?: string | null;
+  pending_email?: string | null;
+  created_at?: string;
+}
+
+export interface AuthSessionResponse {
+  status: 'success' | 'error';
+  authenticated?: boolean;
+  access_token?: string;
+  token?: string;
+  token_type?: string;
+  internal_id?: string;
+  chixus_id?: string;
+  operator_id?: string;
+  node_id?: string;
+  user?: Partial<PermanentUserIdentity> & Record<string, any>;
+  operator?: Partial<PermanentUserIdentity> & Record<string, any>;
+  preferences?: Partial<UserPreferencesPayload> & Record<string, any>;
+  message?: string;
+  detail?: string;
+  error?: string;
+}
+
+export interface AccountChangeRequestResponse {
+  status: 'pending_verification' | 'success' | 'error';
+  message: string;
+  pending_phone?: string;
+  pending_email?: string;
+  expires_at?: string;
+  email_sent_to?: string;
+  user?: Partial<PermanentUserIdentity> & Record<string, any>;
+}
+
+export interface AccountChangeConfirmResponse {
+  status: 'verified' | 'success' | 'error';
+  verified: boolean;
+  change_type?: 'phone_change' | 'email_change';
+  message: string;
+  updated_phone?: string;
+  updated_email?: string;
+  user?: Partial<PermanentUserIdentity> & Record<string, any>;
+}

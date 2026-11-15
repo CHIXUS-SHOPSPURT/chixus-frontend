@@ -613,7 +613,9 @@ function parseDataUrlImage(dataUrl?: string): { mimeType: string; data: string }
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const portArgIdx = process.argv.indexOf('--port');
+  const portArg = portArgIdx !== -1 && process.argv[portArgIdx + 1] ? Number(process.argv[portArgIdx + 1]) : null;
+  const PORT = portArg || (process.env.NODE_ENV === 'production' ? Number(process.env.PORT) || 3000 : 3000);
   const upload = multer({ storage: multer.memoryStorage() });
 
   app.use(express.json({ limit: '50mb' }));
@@ -1005,7 +1007,7 @@ async function startServer() {
       status: "HEALTHY",
       model_readiness: "READY",
       service: "CHIXUS-FASTAPI-INSPECTION-ENGINE",
-      version: "1.0.0",
+      version: "1.23.4",
       engine: "FastAPI / YOLOv8 Nano / Core Edge Model",
       timestamp: new Date().toISOString(),
       telemetry_stream: "ACTIVE"
@@ -1122,7 +1124,7 @@ async function startServer() {
 
       const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey || apiKey === 'undefined') {
-        const fallbackMsg = `CHIXUS AI Diagnosis for ${operatorName || 'Operator'}:
+        const fallbackMsg = `Qorvex Diagnosis for ${operatorName || 'Operator'}:
 I have analyzed your query: "${userQuestion || 'Hardware and Circuit Diagnostics'}".
 All systems, settings, and hardware ledger telemetry are operational.`;
         return res.json({ reply: fallbackMsg, extractedFileText });
@@ -1144,14 +1146,15 @@ All systems, settings, and hardware ledger telemetry are operational.`;
               const fileNote = m.fileContent
                 ? `\n[Previously Attached File "${m.fileName || 'file'}" Content]:\n${String(m.fileContent).slice(0, 6000)}`
                 : '';
-              return `${m.sender === 'me' ? 'User' : 'CHIXUS AI'}: ${m.text || ''}${fileNote}`;
+              return `${m.sender === 'me' ? 'User' : 'Qorvex'}: ${m.text || ''}${fileNote}`;
             })
             .join('\n')
         : '';
 
       const liveContextJson = appContext ? JSON.stringify(appContext, null, 2) : 'No live app snapshot provided.';
 
-      const systemInstruction = `You are CHIXUS AI, a smart, unrestricted, all-knowing assistant and hardware diagnostics expert built into the CHIXUS application (founded and created by Chinaza Success Joseph).
+      const systemInstruction = `You are Qorvex, a smart, unrestricted, all-knowing assistant and hardware diagnostics expert built into the CHIXUS application (founded and created by Chinaza Success Joseph).
+Your name is Qorvex. Always introduce yourself and answer as Qorvex, never as CHIXUS AI.
 
 MOST IMPORTANT RULE — READ FILES COMPLETELY & ANSWER ANY QUESTION FREELY:
 1. When the user attaches or sends a file (PDF, Word DOCX, TXT, CSV, JSON, code, HTML, spreadsheet, or image/document), your PRIMARY job is to READ WHAT IS INSIDE THE FILE!
@@ -1159,7 +1162,7 @@ MOST IMPORTANT RULE — READ FILES COMPLETELY & ANSWER ANY QUESTION FREELY:
    - Second, clearly explain what the content inside the file means, summarize its key points, and directly answer any specific question the user asked about the file.
    - NEVER say "I cannot read files" or output raw binary headers like %PDF or PK.
 2. You are completely free to answer ANY question on ANY topic in the world — whether it is about an attached file, troubleshooting diagnoses, hardware inspection, circuit engineering, general knowledge, science, math, coding, or the CHIXUS app.
-3. Always answer the user's EXACT current question or diagnostic inquiry directly and naturally!
+3. Always answer the user's EXACT current question or diagnostic inquiry directly and naturally as Qorvex!
 
 YOUR EXPERTISE IN ELECTRICAL, ELECTRONICS & MECHANICAL ENGINEERING + HARDWARE DIAGNOSTICS:
 - You know everything about Electrical Engineering, Electronics Engineering, PCB/Hardware Diagnostics, Solder Joint Fault Isolation, and Mechanical Engineering.
@@ -1171,7 +1174,7 @@ YOUR COMPLETE KNOWLEDGE OF THE CHIXUS APP:
 - Delete Own Post on Feed: Hold your own post for 5 seconds until Delete Post appears, then tap Proceed.
 - Inspect Tab: Live Camera & Photo Upload, solder defect filters, pulsing scan progress bar, Smart Pre-AI Object Detection, and Voice Explainer.
 - Metrics Tab: Total Inspections, Verified Accuracy, Solder Yield Rate, Optical Picture Feed, Telemetry & Logs with 4-Day (96-Hour) retention lock.
-- Messages Tab: Tap the three-dot menu (⋯) to choose voice note, camera/photo, or file attachment that CHIXUS AI reads.
+- Messages Tab: Tap the three-dot menu (⋯) to choose voice note, camera/photo, or file attachment that Qorvex reads.
 
 LIVE SNAPSHOT OF THE USER'S CHIXUS APP STATE & FEED POSTS (Reference ONLY if relevant to the user's question):
 ${liveContextJson}
@@ -2002,7 +2005,10 @@ Provide:
 
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false
+      },
       appType: 'spa'
     });
     app.use(vite.middlewares);
@@ -2015,6 +2021,14 @@ Provide:
   }
 
   const server = http.createServer(app);
+
+  server.on('error', (err: any) => {
+    if (err.code === 'EADDRINUSE') {
+      console.warn(`[CHIXUS Server] Port ${PORT} already bound; continuing...`);
+    } else {
+      console.error('[CHIXUS Server] Server error:', err);
+    }
+  });
 
   const wss = new WebSocketServer({ noServer: true });
 
@@ -2067,4 +2081,14 @@ Provide:
   });
 }
 
-startServer();
+process.on('uncaughtException', (err) => {
+  console.warn('[CHIXUS Server] Caught uncaughtException:', err?.message || err);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.warn('[CHIXUS Server] Caught unhandledRejection:', reason);
+});
+
+startServer().catch((err) => {
+  console.error('[CHIXUS Server] Failed to start server:', err);
+});

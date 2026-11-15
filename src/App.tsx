@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import localforage from 'localforage';
+import { trackPageView } from './analytics';
 import {
   Cpu,
   Activity,
@@ -68,17 +69,52 @@ import {
 } from 'lucide-react';
 import SettingsDrawerSplitView from './components/SettingsDrawerSplitView';
 import HelpCenterDrawerSplitView from './components/HelpCenterDrawerSplitView';
+import {
+  CHIXUS_PRIVACY_POLICY,
+  CHIXUS_SAFETY_POLICY,
+  CHIXUS_TERMS_AND_CONDITIONS,
+  ALL_POLICIES
+} from './data/chixusPolicies';
 import type {
   CoreDiagnosticResponse,
   ZeroEnergySafetyVerificationResponse,
   ZeroEnergySafetyVerificationRequest,
-  InspectScanRequest
+  InspectScanRequest,
+  UserPreferencesPayload,
+  PermanentUserIdentity
 } from './types';
-import { API_ENDPOINTS, getBackendBaseUrl, getWebSocketUrl } from './apiConfig';
+import {
+  API_ENDPOINTS,
+  clearAuthToken,
+  getAuthHeaders,
+  getAuthToken,
+  getBackendBaseUrl,
+  getWebSocketUrl,
+  setAuthToken
+} from './apiConfig';
+import {
+  ApiRequestError,
+  DEFAULT_USER_PREFERENCES,
+  PHONE_CHANGE_CONFIRMATION_MESSAGE,
+  changeAccountPassword,
+  confirmEmailAddressChange,
+  confirmPhoneNumberChange,
+  fetchAuthenticatedAccount,
+  fetchUserPreferences,
+  generateNonPhoneChixusId,
+  loginWithIdentifier,
+  logoutSession,
+  normalizeAccountProfile,
+  normalizePreferences,
+  registerOperatorAccount,
+  registerUnauthorizedHandler,
+  requestEmailAddressChange,
+  requestPhoneNumberChange,
+  saveUserPreferences
+} from './services/accountService';
 import {
   CHIXUS_AI_BOT_ID,
   CHIXUS_AI_BOT_AVATAR,
-  CHIXUS_AI_BOT_VERIFIED_BADGE,
   type PreAiObjectDetectionResult,
   analyzeImageObjectBeforeAi,
   TRIBE_VOICE_CATALOG,
@@ -95,7 +131,6 @@ import {
   cleanAiMessageText
 } from './chixusAiandVoice';
 
-const chixusAiVerifiedBadge = CHIXUS_AI_BOT_VERIFIED_BADGE;
 // ============================================================================
 // STANDALONE REGIONAL MATRIX & GEOGRAPHIC LOOKUP DEFINITIONS
 // ============================================================================
@@ -401,8 +436,8 @@ export const clearAllScanLogsFromIndexedDB = async (): Promise<boolean> => {
   }
 };
 
-// Universal High-Tech SVG / Web Asset Placeholders (Self-Contained)
-const metallicLogo = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100"><rect width="100" height="100" fill="%23121316"/><circle cx="50" cy="50" r="42" fill="none" stroke="%23cbd5e1" stroke-width="3"/><polygon points="50,18 78,34 78,66 50,82 22,66 22,34" fill="none" stroke="%2338bdf8" stroke-width="2.5"/><circle cx="50" cy="50" r="16" fill="%231e212b" stroke="%23ffffff" stroke-width="2"/><text x="50" y="55" font-family="monospace" font-size="14" font-weight="bold" fill="%23ffffff" text-anchor="middle">CX</text></svg>';
+// Official CHIXUS Icon
+const metallicLogo = '/asset/icon.jpg';
 const metallicBanner = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 200" width="800" height="200"><rect width="800" height="200" fill="%231e2024"/><line x1="0" y1="100" x2="800" y2="100" stroke="%232a2d36" stroke-width="1"/><circle cx="400" cy="100" r="80" fill="none" stroke="%232f3445" stroke-width="1.5"/><text x="400" y="105" font-family="monospace" font-size="18" fill="%2364748b" letter-spacing="4" text-anchor="middle">CHIXUS GRID // DECENTRALIZED MESH</text></svg>';
 const chinazaAvatar = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=400';
 const defaultBlankOperatorAvatar = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120"><rect width="120" height="120" rx="60" fill="%23161b26"/><circle cx="60" cy="44" r="20" fill="%23334155" stroke="%2338bdf8" stroke-width="2"/><path d="M24 104 C24 80 96 80 96 104" fill="%23334155" stroke="%2338bdf8" stroke-width="2"/></svg>';
@@ -1286,12 +1321,25 @@ const validateLegalFullName = (name: string): boolean => {
 // ==========================================
 export function App() {
   // Onboarding Gateway State: 'splash' | 'login' | 'caution' | 'registration' | 'main_app'
-  // Explicitly log out any previously registered account as requested so everything starts cleanly
+  // Explicitly log out any previously created/cached account so everything starts fresh from backend auth
   const [onboardStage, setOnboardStage] = useState<'splash' | 'login' | 'caution' | 'registration' | 'main_app'>(() => {
     try {
-      const resetKey = 'chixus_reset_logout_applied_v2026';
+      const resetKey = 'chixus_fresh_backend_reset_2026_11_v2';
       if (!localStorage.getItem(resetKey)) {
         localStorage.setItem(resetKey, 'true');
+        clearAuthToken();
+        localStorage.removeItem('chixus_current_user_profile');
+        localStorage.removeItem('chixus_generated_secret_id');
+        localStorage.removeItem('chixus_registered_users');
+        localStorage.removeItem('chixus_user_name_v7');
+        localStorage.removeItem('chixus_user_location_v7');
+        localStorage.removeItem('chixus_headline_v7');
+        localStorage.setItem('chixus_explicit_logout_v1', 'true');
+        localStorage.setItem('chixus_onboard_stage_v1', 'login');
+        return 'login';
+      }
+      const hasValidSessionToken = Boolean(getAuthToken());
+      if (!hasValidSessionToken) {
         localStorage.setItem('chixus_explicit_logout_v1', 'true');
         localStorage.setItem('chixus_onboard_stage_v1', 'login');
         return 'login';
@@ -1410,6 +1458,8 @@ export function App() {
   const [recoveredMasterNodeId, setRecoveredMasterNodeId] = useState<string | null>(null);
   const [recoveredPinCode, setRecoveredPinCode] = useState<string | null>(null);
   const [recoveredCopied, setRecoveredCopied] = useState<boolean>(false);
+  const [activePolicyModal, setActivePolicyModal] = useState<'privacy' | 'safety' | 'terms' | null>(null);
+  const [showLogoutConfirmModal, setShowLogoutConfirmModal] = useState<boolean>(false);
 
   // Progressive Web App (PWA) Cache Cleaner & Service Worker Registration v5.0.0
   const [deferredInstallPrompt, setDeferredInstallPrompt] = useState<any>(null);
@@ -1478,9 +1528,10 @@ export function App() {
     return () => clearInterval(timer);
   }, [resendCooldown]);
 
-  // Permanent Runtime Credentials State Hooks
+  // Permanent Runtime Credentials State Hooks (only hydrated when authenticated token is active)
   const [generatedSecretID, setGeneratedSecretID] = useState<string>(() => {
     try {
+      if (!getAuthToken()) return '';
       return localStorage.getItem('chixus_generated_secret_id') || '';
     } catch {
       return '';
@@ -1488,11 +1539,14 @@ export function App() {
   });
 
   const [currentUserProfile, setCurrentUserProfile] = useState<{
+    internalId?: string;
     username: string;
     fullName: string;
     location: string;
     email: string;
     phoneNumber: string;
+    pendingPhone?: string | null;
+    pendingEmail?: string | null;
     inspectionsConducted: number;
     faultsIsolated: number;
     aiScanAccuracy: string;
@@ -1507,12 +1561,40 @@ export function App() {
     starLevel?: number;
   } | null>(() => {
     try {
+      if (!getAuthToken()) return null;
       const saved = localStorage.getItem('chixus_current_user_profile');
       return saved ? JSON.parse(saved) : null;
     } catch {
       return null;
     }
   });
+
+  const [userPreferences, setUserPreferences] = useState<UserPreferencesPayload>(() => {
+    try {
+      const savedId = (localStorage.getItem('chixus_generated_secret_id') || '').trim().toUpperCase();
+      const rawCache = savedId ? localStorage.getItem(`chixus_prefs_cache_v1_${savedId}`) : null;
+      if (rawCache) {
+        return normalizePreferences(JSON.parse(rawCache));
+      }
+    } catch {}
+    return DEFAULT_USER_PREFERENCES;
+  });
+  const userPreferencesRef = useRef<UserPreferencesPayload>(userPreferences);
+  useEffect(() => {
+    userPreferencesRef.current = userPreferences;
+  }, [userPreferences]);
+  const [isLoadingPreferences, setIsLoadingPreferences] = useState<boolean>(false);
+  const [preferencesSyncError, setPreferencesSyncError] = useState<string | null>(null);
+  const seenIncomingDmIdsRef = useRef<Set<string>>(new Set());
+  const hasCompletedInitialDmSyncRef = useRef<boolean>(false);
+  const appUpdateCheckedRef = useRef<boolean>(false);
+  const [accountVerificationModal, setAccountVerificationModal] = useState<{
+    status: 'verifying' | 'success' | 'error';
+    type: 'phone_change' | 'email_change';
+    message: string;
+    updatedValue?: string;
+    chixusId?: string;
+  } | null>(null);
 
   // Splash & Initialization Timers
   const [splashProgress, setSplashProgress] = useState<number>(0);
@@ -1559,11 +1641,29 @@ export function App() {
     } catch {}
   }, [activeTab]);
 
+  // Google Analytics 4 (GA4) Client-Side Route & Tab Tracking
   useEffect(() => {
-    try {
-      localStorage.setItem('chixus_active_tab_v1', activeTab);
-    } catch {}
-  }, [activeTab]);
+    let routePath = '/feed';
+    let routeTitle = 'CHIXUS — Visual Fault Inspector';
+
+    if (onboardStage !== 'main_app') {
+      routePath = `/${onboardStage}`;
+      if (onboardStage === 'splash') routeTitle = 'CHIXUS — Initializing System Core';
+      else if (onboardStage === 'login') routeTitle = 'CHIXUS — Node Authentication';
+      else if (onboardStage === 'caution') routeTitle = 'CHIXUS — Zero-Energy Safety Protocol';
+      else if (onboardStage === 'registration') routeTitle = 'CHIXUS — Operator Registration';
+    } else {
+      routePath = `/${activeTab}`;
+      if (activeTab === 'feed') routeTitle = 'CHIXUS — Field Feed & Circuit Intel';
+      else if (activeTab === 'inspect') routeTitle = 'CHIXUS — AI Visual Inspector';
+      else if (activeTab === 'metrics') routeTitle = 'CHIXUS — System Performance & Telemetry';
+      else if (activeTab === 'messages') routeTitle = 'CHIXUS — Secure Comms & Dispatch';
+      else if (activeTab === 'search') routeTitle = 'CHIXUS — Global Component Search';
+      else if (activeTab === 'settings') routeTitle = 'CHIXUS — Node Security & Settings';
+    }
+
+    trackPageView(routePath, routeTitle);
+  }, [onboardStage, activeTab]);
 
   // Dark/Light Theme (Silver Metallic Palette Default: false = Silver Mode)
   const [darkModeTheme, setDarkModeTheme] = useState<boolean>(() => {
@@ -1673,14 +1773,179 @@ export function App() {
   const [meshP2PSync, setMeshP2PSync] = useState<boolean>(true);
   const [soundFeedbackEnabled, setSoundFeedbackEnabled] = useState<boolean>(() => {
     try {
+      const savedId = (localStorage.getItem('chixus_generated_secret_id') || '').trim().toUpperCase();
+      const rawCache = savedId ? localStorage.getItem(`chixus_prefs_cache_v1_${savedId}`) : null;
+      if (rawCache) {
+        const parsed = normalizePreferences(JSON.parse(rawCache));
+        return parsed.soundFeedback;
+      }
       const saved = localStorage.getItem('chixus_sound_feedback_enabled_v1');
       if (saved !== null) return saved !== 'false' && saved !== 'off' && saved !== '0';
     } catch {}
     return true;
   });
 
-  const handleToggleSoundFeedback = (forcedState?: boolean) => {
-    const next = forcedState !== undefined ? forcedState : !soundFeedbackEnabled;
+  const applyPreferencesLocally = (prefs: UserPreferencesPayload, nodeIdOverride?: string) => {
+    const normalized = normalizePreferences(prefs);
+    setUserPreferences(normalized);
+    userPreferencesRef.current = normalized;
+
+    setSoundFeedbackEnabled(normalized.soundFeedback);
+    globalSoundFeedbackMuted = !normalized.soundFeedback;
+
+    if (normalized.theme === 'dark') {
+      setDarkModeTheme(true);
+      try {
+        localStorage.setItem('chixus_dark_mode_v7', JSON.stringify(true));
+      } catch {}
+    } else if (normalized.theme === 'white') {
+      setDarkModeTheme(false);
+      try {
+        localStorage.setItem('chixus_dark_mode_v7', JSON.stringify(false));
+      } catch {}
+    }
+
+    try {
+      const activeId = (nodeIdOverride || localStorage.getItem('chixus_generated_secret_id') || currentUserProfile?.secretId || '')
+        .trim()
+        .toUpperCase();
+      if (activeId) {
+        localStorage.setItem(`chixus_prefs_cache_v1_${activeId}`, JSON.stringify(normalized));
+      }
+      localStorage.setItem('chixus_sound_feedback_enabled_v1', normalized.soundFeedback ? 'true' : 'false');
+      localStorage.setItem('chixus_id_public_visibility_v1', normalized.isIdPublic ? 'true' : 'false');
+      localStorage.setItem('chixus_ai_access_permission_v1', normalized.aiAccessLevel === 'none' ? 'denied' : normalized.aiAccessLevel);
+      localStorage.setItem('chixus_selected_language_clean_v1', normalized.language);
+    } catch {}
+  };
+
+  const applyAuthenticatedIdentity = (identity: PermanentUserIdentity) => {
+    const permanentChixusId = (identity.chixus_id || currentUserProfile?.secretId || generatedSecretID || '').trim().toUpperCase();
+    const nextAvatar =
+      identity.avatar_url && !String(identity.avatar_url).includes('dicebear.com')
+        ? identity.avatar_url
+        : currentUserProfile?.avatarUrl || avatarUrl;
+    const nextCover = identity.cover_url || currentUserProfile?.coverUrl || coverUrl;
+
+    const mergedProfile = {
+      ...(currentUserProfile || {}),
+      internalId: identity.internal_id || currentUserProfile?.internalId || permanentChixusId,
+      username: identity.username || permanentChixusId,
+      fullName: identity.full_name || currentUserProfile?.fullName || permanentChixusId,
+      location: identity.location || currentUserProfile?.location || 'Sector Relay // Nigeria',
+      email: identity.email || currentUserProfile?.email || '',
+      phoneNumber: identity.phone_number || currentUserProfile?.phoneNumber || '',
+      pendingPhone: identity.pending_phone ?? null,
+      pendingEmail: identity.pending_email ?? null,
+      inspectionsConducted: identity.inspections_conducted ?? currentUserProfile?.inspectionsConducted ?? 0,
+      faultsIsolated: identity.faults_isolated ?? currentUserProfile?.faultsIsolated ?? 0,
+      aiScanAccuracy: identity.ai_scan_accuracy || currentUserProfile?.aiScanAccuracy || '0.0%',
+      secretId: permanentChixusId,
+      headline: identity.headline ?? currentUserProfile?.headline ?? '',
+      avatarUrl: nextAvatar,
+      coverUrl: nextCover,
+      summary: identity.summary ?? currentUserProfile?.summary ?? ''
+    };
+
+    setCurrentUserProfile(mergedProfile);
+    if (permanentChixusId) {
+      setGeneratedSecretID(permanentChixusId);
+      safeSetLocalStorage('chixus_generated_secret_id', permanentChixusId);
+    }
+    if (mergedProfile.fullName) setUserName(mergedProfile.fullName);
+    if (mergedProfile.location) setUserLocation(mergedProfile.location);
+    setUserHeadline(mergedProfile.headline || '');
+    setRegPhoneNumber(mergedProfile.phoneNumber || '');
+    setRegEmail(mergedProfile.email || '');
+    setUserInspectionsConducted(mergedProfile.inspectionsConducted);
+    setUserFaultsIsolated(mergedProfile.faultsIsolated);
+    setUserAiScanAccuracy(mergedProfile.aiScanAccuracy);
+    if (nextAvatar) setAvatarUrl(nextAvatar);
+    if (nextCover) setCoverUrl(nextCover);
+    if (typeof mergedProfile.summary === 'string') setExecutiveSummary(mergedProfile.summary);
+    safeSaveUserProfileToStorage(mergedProfile);
+  };
+
+  const loadAccountAndPreferencesFromBackend = async () => {
+    if (!getAuthToken()) return;
+    setIsLoadingPreferences(true);
+    setPreferencesSyncError(null);
+
+    const [acctRes, prefRes] = await Promise.allSettled([
+      fetchAuthenticatedAccount(),
+      fetchUserPreferences()
+    ]);
+
+    if (acctRes.status === 'fulfilled') {
+      applyAuthenticatedIdentity(acctRes.value);
+    }
+    if (prefRes.status === 'fulfilled') {
+      applyPreferencesLocally(
+        prefRes.value,
+        acctRes.status === 'fulfilled' ? acctRes.value.chixus_id : undefined
+      );
+      setPreferencesSyncError(null);
+    } else {
+      const errMsg =
+        prefRes.reason instanceof Error
+          ? prefRes.reason.message
+          : 'Failed to load preferences from backend.';
+      setPreferencesSyncError(errMsg);
+    }
+
+    setIsLoadingPreferences(false);
+  };
+
+  const handleUpdatePreferencePatch = async (
+    nextPrefs: UserPreferencesPayload,
+    _changedKey: string
+  ): Promise<{ ok: boolean; error?: string }> => {
+    if (!getAuthToken()) {
+      const msg = 'Authenticated session required. Please log in again to save settings.';
+      setPreferencesSyncError(msg);
+      sound.playError();
+      triggerToast(`❌ ${msg}`, { kind: 'critical' });
+      return { ok: false, error: msg };
+    }
+
+    setPreferencesSyncError(null);
+    try {
+      const confirmed = await saveUserPreferences(nextPrefs);
+      applyPreferencesLocally(confirmed);
+      return { ok: true };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Unable to save preference to backend.';
+      setPreferencesSyncError(msg);
+      sound.playError();
+      triggerToast(`❌ Setting not saved: ${msg}`, { kind: 'critical' });
+      return { ok: false, error: msg };
+    }
+  };
+
+  const handleToggleSoundFeedback = async (forcedState?: boolean): Promise<boolean> => {
+    const prev = soundFeedbackEnabled;
+    const next = forcedState !== undefined ? forcedState : !prev;
+
+    if (getAuthToken() && onboardStage === 'main_app') {
+      const result = await handleUpdatePreferencePatch(
+        {
+          ...userPreferencesRef.current,
+          soundFeedback: next
+        },
+        'soundFeedback'
+      );
+      if (!result.ok) {
+        return false;
+      }
+      if (next) {
+        sound.playSuccess();
+        triggerToast('🔊 Sound feedback enabled (On).');
+      } else {
+        triggerToast('🔇 Sound feedback muted (Off).');
+      }
+      return true;
+    }
+
     setSoundFeedbackEnabled(next);
     globalSoundFeedbackMuted = !next;
     try {
@@ -1692,6 +1957,7 @@ export function App() {
     } else {
       triggerToast('🔇 Sound feedback muted (Off).');
     }
+    return true;
   };
   const [isTermsAccordionOpen, setIsTermsAccordionOpen] = useState<boolean>(false);
   const [showTermsAgreementModal, setShowTermsAgreementModal] = useState<boolean>(false);
@@ -1750,12 +2016,215 @@ export function App() {
     triggerToast(`🔗 Network endpoint updated to: ${clean || 'System Default'}`);
   };
 
-  const triggerToast = (msg: string) => {
+  const [customBackendInput, setCustomBackendInput] = useState<string>(() => getBackendBaseUrl());
+  const [backendTestStatus, setBackendTestStatus] = useState<{
+    status: 'idle' | 'testing' | 'connected' | 'error';
+    message: string;
+    latency?: number;
+  }>({ status: 'idle', message: '' });
+
+  const testBackendConnection = async (targetUrl?: string) => {
+    const urlToTest = (targetUrl !== undefined ? targetUrl : customBackendInput).trim().replace(/\/+$/, '');
+    setBackendTestStatus({ status: 'testing', message: 'Pinging backend /health endpoint...' });
+    const start = Date.now();
+    try {
+      const endpoint = urlToTest ? `${urlToTest}/health` : '/health';
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      const res = await fetch(endpoint, { signal: controller.signal });
+      clearTimeout(timeout);
+      const elapsed = Date.now() - start;
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setBackendTestStatus({
+          status: 'connected',
+          message: `Connected! ${data.service || 'Backend'} (${elapsed}ms)`,
+          latency: elapsed
+        });
+        sound.playSuccess();
+        triggerToast(`✅ Backend reachable (${elapsed}ms)`);
+      } else {
+        setBackendTestStatus({
+          status: 'error',
+          message: `HTTP ${res.status}: ${res.statusText || 'Endpoint returned error'}`
+        });
+        sound.playError();
+      }
+    } catch (err: any) {
+      setBackendTestStatus({
+        status: 'error',
+        message: err.name === 'AbortError' ? 'Connection timed out (8s)' : 'Unable to connect to backend'
+      });
+      sound.playError();
+    }
+  };
+
+  const triggerToast = (
+    msg: string,
+    options?: {
+      kind?: 'standard' | 'critical' | 'app_update' | 'direct_message' | 'contact_join';
+    }
+  ) => {
+    const kind = options?.kind || 'standard';
+    const isCritical = kind === 'critical' || /^[❌⚠️🚨🚫]/u.test(msg.trim());
+    const prefs = userPreferencesRef.current;
+
+    if (!isCritical && onboardStage === 'main_app') {
+      if (kind === 'app_update' && !prefs.inAppAlerts.appUpdate) return;
+      if (kind === 'direct_message' && !prefs.inAppAlerts.directMessage) return;
+      if (kind === 'contact_join' && !prefs.inAppAlerts.contactJoin) return;
+      if (!prefs.inAppAlerts.popupToast) return;
+    }
+
     setToastFeedback(msg);
     setTimeout(() => {
       setToastFeedback((curr) => (curr === msg ? null : curr));
     }, 3500);
   };
+
+  useEffect(() => {
+    registerUnauthorizedHandler(() => {
+      clearAuthToken();
+      setPreferencesSyncError('Session expired or unauthorized. Please log in again.');
+      try {
+        localStorage.setItem('chixus_explicit_logout_v1', 'true');
+        localStorage.setItem('chixus_onboard_stage_v1', 'login');
+      } catch {}
+      setIsSettingsDrawerOpen(false);
+      setIsHelpCenterDrawerOpen(false);
+      setIsSideDrawerOpen(false);
+      setIsDossierDrawerOpen(false);
+      setToastFeedback('⚠️ Session expired. Please sign in with your CHIXUS ID.');
+      setOnboardStage('login');
+    });
+    return () => registerUnauthorizedHandler(null);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const verifyParam = (params.get('verify') || params.get('action') || '').toLowerCase();
+    const token = (params.get('token') || '').trim();
+    const pathname = window.location.pathname.toLowerCase();
+
+    const isPhoneConfirm =
+      verifyParam === 'phone-change' ||
+      verifyParam === 'confirm-phone-change' ||
+      pathname.includes('verify-phone-change');
+    const isEmailConfirm =
+      verifyParam === 'email-change' ||
+      verifyParam === 'confirm-email-change' ||
+      pathname.includes('verify-email-change');
+
+    if ((!isPhoneConfirm && !isEmailConfirm) || !token) return;
+
+    const changeType: 'phone_change' | 'email_change' = isPhoneConfirm ? 'phone_change' : 'email_change';
+    setAccountVerificationModal({
+      status: 'verifying',
+      type: changeType,
+      message:
+        changeType === 'phone_change'
+          ? 'Verifying your phone number change confirmation token...'
+          : 'Verifying your email address change confirmation token...'
+    });
+
+    (async () => {
+      try {
+        const res =
+          changeType === 'phone_change'
+            ? await confirmPhoneNumberChange(token)
+            : await confirmEmailAddressChange(token);
+
+        if (getAuthToken()) {
+          try {
+            const freshIdentity = await fetchAuthenticatedAccount();
+            applyAuthenticatedIdentity(freshIdentity);
+          } catch {}
+        }
+
+        const updatedVal =
+          res.updated_phone ||
+          res.updated_email ||
+          res.user?.phone_number ||
+          res.user?.email ||
+          '';
+
+        if (res.user) {
+          applyAuthenticatedIdentity(normalizeAccountProfile(res.user));
+        } else if (changeType === 'phone_change' && updatedVal && currentUserProfile) {
+          setRegPhoneNumber(updatedVal);
+          setCurrentUserProfile((prev) => (prev ? { ...prev, phoneNumber: updatedVal, pendingPhone: null } : prev));
+        } else if (changeType === 'email_change' && updatedVal && currentUserProfile) {
+          setRegEmail(updatedVal);
+          setCurrentUserProfile((prev) => (prev ? { ...prev, email: updatedVal, pendingEmail: null } : prev));
+        }
+
+        sound.playSuccess();
+        setAccountVerificationModal({
+          status: 'success',
+          type: changeType,
+          message:
+            res.message ||
+            (changeType === 'phone_change'
+              ? 'Your phone number has been verified and updated without altering your permanent CHIXUS ID.'
+              : 'Your email address has been verified and updated without altering your permanent CHIXUS ID.'),
+          updatedValue: updatedVal || undefined,
+          chixusId: res.user?.chixus_id || currentUserProfile?.secretId || generatedSecretID || undefined
+        });
+      } catch (err: unknown) {
+        sound.playError();
+        setAccountVerificationModal({
+          status: 'error',
+          type: changeType,
+          message:
+            err instanceof Error
+              ? err.message
+              : 'Verification link is invalid or has expired. Please request a new confirmation link from Settings.'
+        });
+      } finally {
+        try {
+          const cleanUrl = window.location.pathname.includes('verify-') ? '/' : window.location.pathname;
+          window.history.replaceState({}, document.title, cleanUrl);
+        } catch {}
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (onboardStage !== 'main_app') return;
+    if (getAuthToken()) {
+      void loadAccountAndPreferencesFromBackend();
+    }
+  }, [onboardStage]);
+
+  useEffect(() => {
+    if (onboardStage !== 'main_app' || appUpdateCheckedRef.current) return;
+    if (!userPreferences.inAppAlerts.appUpdate) return;
+    appUpdateCheckedRef.current = true;
+
+    (async () => {
+      try {
+        const res = await fetch(API_ENDPOINTS.HEALTH(), { cache: 'no-store' });
+        const data = await res.json().catch(() => null);
+        const latestVer = String(data?.latest_client_version || data?.min_client_version || '').trim();
+        if (latestVer && latestVer !== '1.23.4') {
+          triggerToast(`🆕 CHIXUS v${latestVer} update is available.`, { kind: 'app_update' });
+        }
+      } catch {}
+    })();
+
+    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistration().then((reg) => {
+        if (!reg) return;
+        const onUpdateFound = () => {
+          if (userPreferencesRef.current.inAppAlerts.appUpdate) {
+            triggerToast('🆕 A new CHIXUS app update is ready. Reload to activate.', { kind: 'app_update' });
+          }
+        };
+        reg.addEventListener('updatefound', onUpdateFound);
+      }).catch(() => {});
+    }
+  }, [onboardStage, userPreferences.inAppAlerts.appUpdate]);
 
   // Dynamic User Profile Credentials (without hardcoded identity strings)
   const [userName, setUserName] = useState<string>(() => {
@@ -3478,7 +3947,7 @@ export function App() {
             const filteredPrev = prev.filter((c) => !isContactDeletedByMe(c.id, c.name));
             if (filteredPrev.length !== prev.length) changed = true;
             const next = filteredPrev.map((c) => {
-              if (c.id === CHIXUS_AI_BOT_ID || c.name === 'CHIXUS AI') return c;
+              if (c.id === CHIXUS_AI_BOT_ID || c.name === 'Qorvex' || c.name === 'Qordex' || c.name === 'CHIXUS AI') return c;
               const cNodeId = c.id.startsWith('c-') ? c.id.slice(2).trim().toUpperCase() : '';
               const liveMatch = (cNodeId && liveById[cNodeId]) || liveByName[c.name.trim().toLowerCase()];
               const nextRole = liveMatch?.headline || c.role || 'Connected Operator';
@@ -3501,7 +3970,7 @@ export function App() {
 
           // Live-update selectedPeerProfile modal if currently open for this operator
           setSelectedPeerProfile((prev: any) => {
-            if (!prev || prev.name === 'CHIXUS AI' || prev.operator_id === 'CHI-AI01-BOT') return prev;
+            if (!prev || prev.name === 'Qorvex' || prev.name === 'Qordex' || prev.name === 'CHIXUS AI' || prev.operator_id === 'CHI-AI01-BOT') return prev;
             const opId = String(prev.operator_id || '').trim().toUpperCase();
             if (opId && opId === activeId) return prev;
             const liveMatch = (opId && liveById[opId]) || liveByName[String(prev.name || '').trim().toLowerCase()];
@@ -4086,7 +4555,8 @@ export function App() {
     const narrative = buildSpokenTribeNarrative(
       tribeQuery,
       preAiObjectResult,
-      scanResult
+      scanResult,
+      coreDiagnostic
     );
     setSpokenTranscriptPreview(narrative.spokenText);
     setIsSpeakingVoice(true);
@@ -4381,11 +4851,11 @@ export function App() {
     };
   }, []);
 
-  // Messaging Contacts & Active Chat (Includes Official CHIXUS AI Bot)
+  // Messaging Contacts & Active Chat (Includes Official Qorvex Bot)
   const defaultChixusBotContact: Contact = {
     id: CHIXUS_AI_BOT_ID,
-    name: 'CHIXUS AI',
-    role: 'Verified Intelligent Assistant • 24/7 Instant Answers & Diagnostics',
+    name: 'Qorvex',
+    role: 'Intelligent Assistant • 24/7 Instant Answers & Diagnostics',
     status: 'Online',
     avatar: CHIXUS_AI_BOT_AVATAR
   };
@@ -4568,15 +5038,16 @@ export function App() {
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
-          const hasBot = parsed.some((c: Contact) => c.id === CHIXUS_AI_BOT_ID || c.name === 'CHIXUS AI');
+          const hasBot = parsed.some((c: Contact) => c.id === CHIXUS_AI_BOT_ID || c.name === 'CHIXUS AI' || c.name === 'Qorvex' || c.name === 'Qordex');
           const botDeleted = localStorage.getItem('chixus_ai_bot_deleted_v1') === 'true';
           const normalizedList = (!hasBot && !botDeleted ? [defaultChixusBotContact, ...parsed] : parsed).map((c: Contact) =>
-            c.id === CHIXUS_AI_BOT_ID || c.name === 'CHIXUS AI'
+            c.id === CHIXUS_AI_BOT_ID || c.name === 'CHIXUS AI' || c.name === 'Qorvex' || c.name === 'Qordex'
               ? {
                   ...c,
                   id: CHIXUS_AI_BOT_ID,
+                  name: 'Qorvex',
                   avatar: CHIXUS_AI_BOT_AVATAR,
-                  role: 'Verified Intelligent Assistant • 24/7 Instant Answers & Diagnostics'
+                  role: 'Intelligent Assistant • 24/7 Instant Answers & Diagnostics'
                 }
               : c
           );
@@ -4594,7 +5065,7 @@ export function App() {
       id: 'msg-chixus-ai-welcome',
       contactId: CHIXUS_AI_BOT_ID,
       sender: 'them',
-      text: 'Hello Operator! I am CHIXUS AI, your intelligent assistant.\n\nAsk me any question and I will reply directly to what you said. Hold any chat profile or message for 3 seconds to see more actions!',
+      text: 'Hello Operator! I am Qorvex, your intelligent assistant.\n\nAsk me any question and I will reply directly to what you said. Hold any chat profile or message for 3 seconds to see more actions!',
       timestamp: 'Online'
     };
     try {
@@ -4653,7 +5124,7 @@ export function App() {
     peer?: Contact | { id?: string; name?: string; status?: string; isBlocked?: boolean; isSimulatedOnline?: boolean; isSimulatedOffline?: boolean } | null
   ): boolean => {
     if (!peer) return false;
-    if (peer.id === CHIXUS_AI_BOT_ID || peer.name === 'CHIXUS AI') return true;
+    if (peer.id === CHIXUS_AI_BOT_ID || peer.name === 'Qorvex' || peer.name === 'Qordex' || peer.name === 'CHIXUS AI') return true;
     if (peer.isBlocked) return false;
     if (peer.isSimulatedOffline === true || peer.status?.toLowerCase() === 'offline') return false;
     if (peer.isSimulatedOnline === true) return true;
@@ -4669,7 +5140,7 @@ export function App() {
 
   const handleToggleContactOnlineStatus = (contactId: string, contactName: string) => {
     if (contactId === CHIXUS_AI_BOT_ID) {
-      triggerToast('ℹ️ CHIXUS AI assistant is always available online 24/7.');
+      triggerToast('ℹ️ Qorvex assistant is always available online 24/7.');
       return;
     }
     let newStatus = 'Offline';
@@ -4777,8 +5248,8 @@ export function App() {
   useEffect(() => {
     setContacts((prev) =>
       prev.map((c) =>
-        c.id === CHIXUS_AI_BOT_ID || c.name === 'CHIXUS AI'
-          ? { ...c, id: CHIXUS_AI_BOT_ID, avatar: CHIXUS_AI_BOT_AVATAR }
+        c.id === CHIXUS_AI_BOT_ID || c.name === 'CHIXUS AI' || c.name === 'Qorvex' || c.name === 'Qordex'
+          ? { ...c, id: CHIXUS_AI_BOT_ID, name: 'Qorvex', avatar: CHIXUS_AI_BOT_AVATAR }
           : c
       )
     );
@@ -5047,7 +5518,7 @@ export function App() {
       id: 'msg-chixus-ai-welcome',
       contactId: CHIXUS_AI_BOT_ID,
       sender: 'them',
-      text: 'Hello Operator! I am CHIXUS AI, your intelligent assistant.\n\nAsk me any question and I will reply directly to what you said. Hold any chat profile or message for 3 seconds to see more actions!',
+      text: 'Hello Operator! I am Qorvex, your intelligent assistant.\n\nAsk me any question and I will reply directly to what you said. Hold any chat profile or message for 3 seconds to see more actions!',
       timestamp: 'Online'
     };
 
@@ -5340,118 +5811,6 @@ export function App() {
   const [showChatScrollDownBtn, setShowChatScrollDownBtn] = useState<boolean>(false);
   const chatSavedScrollMapRef = useRef<Record<string, number>>({});
   const prevChatMsgCountRef = useRef<number>(chatMessages.length);
-  const [aiVerifyBadgeSrc, setAiVerifyBadgeSrc] = useState<string>(chixusAiVerifiedBadge);
-
-  useEffect(() => {
-    const processEmblemToTransparentPng = (src: string, onDone: (dataUrl: string) => void) => {
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = () => {
-        try {
-          const size = 256;
-          const canvas = document.createElement('canvas');
-          canvas.width = size;
-          canvas.height = size;
-          const ctx = canvas.getContext('2d');
-          if (!ctx) return;
-          ctx.drawImage(img, 0, 0, size, size);
-          const imageData = ctx.getImageData(0, 0, size, size);
-          const data = imageData.data;
-          const visited = new Uint8Array(size * size);
-          const queue = new Int32Array(size * size);
-          let head = 0;
-          let tail = 0;
-
-          const tryEnqueue = (x: number, y: number) => {
-            if (x < 0 || x >= size || y < 0 || y >= size) return;
-            const idx = y * size + x;
-            if (visited[idx]) return;
-            const p = idx * 4;
-            const r = data[p];
-            const g = data[p + 1];
-            const b = data[p + 2];
-            // Only strip pure black outer background corners (< 16) so dark metallic gear teeth and CHIXUS banner remain 100% intact
-            if (r < 16 && g < 16 && b < 16) {
-              visited[idx] = 1;
-              queue[tail++] = idx;
-            }
-          };
-
-          for (let i = 0; i < size; i++) {
-            tryEnqueue(i, 0);
-            tryEnqueue(i, size - 1);
-            tryEnqueue(0, i);
-            tryEnqueue(size - 1, i);
-          }
-
-          while (head < tail) {
-            const curr = queue[head++];
-            data[curr * 4 + 3] = 0;
-            const cx = curr % size;
-            const cy = (curr / size) | 0;
-            tryEnqueue(cx + 1, cy);
-            tryEnqueue(cx - 1, cy);
-            tryEnqueue(cx, cy + 1);
-            tryEnqueue(cx, cy - 1);
-          }
-
-          let minX = size;
-          let minY = size;
-          let maxX = 0;
-          let maxY = 0;
-          for (let y = 0; y < size; y++) {
-            for (let x = 0; x < size; x++) {
-              const p = (y * size + x) * 4;
-              if (data[p + 3] > 0) {
-                if (x < minX) minX = x;
-                if (x > maxX) maxX = x;
-                if (y < minY) minY = y;
-                if (y > maxY) maxY = y;
-              }
-            }
-          }
-
-          ctx.putImageData(imageData, 0, 0);
-          if (maxX > minX && maxY > minY) {
-            const pad = 2;
-            const sx = Math.max(0, minX - pad);
-            const sy = Math.max(0, minY - pad);
-            const sw = Math.min(size - sx, maxX - minX + 1 + pad * 2);
-            const sh = Math.min(size - sy, maxY - minY + 1 + pad * 2);
-            const side = Math.max(sw, sh);
-            const out = document.createElement('canvas');
-            out.width = side;
-            out.height = side;
-            const outCtx = out.getContext('2d');
-            if (outCtx) {
-              outCtx.drawImage(
-                canvas,
-                sx,
-                sy,
-                sw,
-                sh,
-                (side - sw) / 2,
-                (side - sh) / 2,
-                sw,
-                sh
-              );
-              onDone(out.toDataURL('image/png'));
-              return;
-            }
-          }
-          onDone(canvas.toDataURL('image/png'));
-        } catch {
-          onDone(src);
-        }
-      };
-      img.onerror = () => onDone(src);
-      img.src = src;
-    };
-
-    processEmblemToTransparentPng(chixusAiVerifiedBadge, (dataUrl) => {
-      setAiVerifyBadgeSrc(dataUrl || chixusAiVerifiedBadge);
-    });
-  }, []);
 
   // Profile Edit Temp State
   const [editNameInput, setEditNameInput] = useState(userName);
@@ -5813,11 +6172,10 @@ export function App() {
       return;
     }
 
-    if (user.name === 'CHIXUS AI' || user.name === CHIXUS_AI_BOT_ID) {
+    if (user.name === 'Qorvex' || user.name === 'Qordex' || user.name === 'CHIXUS AI' || user.name === CHIXUS_AI_BOT_ID) {
       const botNode: UserNode = {
         id: CHIXUS_AI_BOT_ID,
-        name: 'CHIXUS AI',
-        badge: 'Verified Intelligent Assistant • 24/7 Instant Help',
+        name: 'Qorvex',
         avatar: CHIXUS_AI_BOT_AVATAR,
         inspectionsConducted: '∞',
         faultsIsolated: '99.9%',
@@ -5945,10 +6303,9 @@ export function App() {
       return;
     }
 
-    if (authorName === 'CHIXUS AI' || authorName === CHIXUS_AI_BOT_ID || cleanTargetId === 'CHI-AI01-BOT') {
+    if (authorName === 'Qorvex' || authorName === 'Qordex' || authorName === 'CHIXUS AI' || authorName === CHIXUS_AI_BOT_ID || cleanTargetId === 'CHI-AI01-BOT') {
       setSelectedPeerProfile({
-        name: 'CHIXUS AI',
-        badge: 'Verified Intelligent Assistant • 24/7 Instant Help',
+        name: 'Qorvex',
         avatar: CHIXUS_AI_BOT_AVATAR,
         inspectionsConducted: '∞',
         faultsIsolated: '99.9%',
@@ -6079,7 +6436,7 @@ export function App() {
     }, 200);
   };
 
-  // 🌐 Strict Asynchronous Operator Search Handler (Backend GET http://localhost:8000/api/users/search?id=...)
+  // 🌐 Asynchronous Operator Search Handler (CHIXUS ID, Phone Number, or Email)
   const handleSearchNode = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const query = (nodeSearchInput || '').trim();
@@ -6092,24 +6449,26 @@ export function App() {
     if (!query) {
       sound.playError();
       setNodeSearchLoading(false);
-      setNodeSearchError('Operator ID not found in verified registry.');
+      setNodeSearchError('Enter a CHIXUS ID, phone number, or email to search.');
       return;
     }
 
     try {
       let res: Response;
+      const reqHeaders = getAuthHeaders();
       try {
-        res = await fetch(API_ENDPOINTS.USER_SEARCH(query));
+        res = await fetch(API_ENDPOINTS.USER_SEARCH(query), { headers: reqHeaders });
       } catch {
-        res = await fetch(`/api/users/search?id=${encodeURIComponent(query)}`);
+        res = await fetch(`/api/users/search?id=${encodeURIComponent(query)}`, { headers: reqHeaders });
       }
 
       if (res.status === 200) {
         const data = await res.json();
         const u = data?.user;
-        if (u && (u.id || u.operator_key || u.operator_id || u.name || u.full_name)) {
-          const operatorKey = String(u.operator_key || u.operator_id || u.id || u.username || query).trim().toUpperCase();
-          const name = String(u.name || u.full_name || operatorKey);
+        if (u && (u.chixus_id || u.id || u.operator_key || u.operator_id || u.name || u.full_name)) {
+          const operatorKey = String(u.chixus_id || u.operator_key || u.operator_id || u.id || u.username || query).trim().toUpperCase();
+          const isPublicId = u.is_id_public !== false && u.isIdPublic !== false;
+          const name = String(u.name || u.full_name || (isPublicId ? operatorKey : 'Verified CHIXUS Operator'));
           const role = String(u.role || 'Verified Systems Operator');
           const isChinaza = operatorKey === 'CHI-7649-NG' || operatorKey === 'CHI-4591-NG' || name.toLowerCase().includes('chinaza');
           const rawAv = isRealCustomAvatar(u.avatar_url || u.avatar) ? (u.avatar_url || u.avatar) : '';
@@ -6117,33 +6476,33 @@ export function App() {
 
           setNodeSearchResult({
             name,
-            operator_key: operatorKey,
+            operator_key: isPublicId ? operatorKey : 'ID PRIVATE',
             operator_id: operatorKey,
-            username: operatorKey,
+            username: isPublicId ? operatorKey : name,
             role,
             avatar_url: finalAv,
             avatar: finalAv,
             location: u.location || 'Global Grid // Sovereign Sector',
             headline: u.headline || 'Verified Hardware & Telemetry Operator',
-            inspections: u.inspections ?? 142,
-            faults: u.faults ?? 18,
+            inspections: u.inspections ?? u.inspections_conducted ?? 142,
+            faults: u.faults ?? u.faults_isolated ?? 18,
             accuracy: u.accuracy ?? 99.2
           });
           setNodeSearchError(null);
           sound.playSuccess();
         } else {
           setNodeSearchResult(null);
-          setNodeSearchError('Operator ID not found in verified registry.');
+          setNodeSearchError('No matching operator account found in verified registry.');
           sound.playError();
         }
       } else {
         setNodeSearchResult(null);
-        setNodeSearchError('Operator ID not found in verified registry.');
+        setNodeSearchError('No matching operator account found in verified registry.');
         sound.playError();
       }
     } catch {
       setNodeSearchResult(null);
-      setNodeSearchError('Operator ID not found in verified registry.');
+      setNodeSearchError('No matching operator account found in verified registry.');
       sound.playError();
     } finally {
       setNodeSearchLoading(false);
@@ -7034,8 +7393,19 @@ export function App() {
           }
         } catch {}
 
+        const activePrefs = userPreferencesRef.current;
         const myNotifs = Array.from(notifMap.values())
-          .filter((n: any) => !deletedNotifIds.has(String(n.id)) && isAddressedToMe(n.to_id, n.to_name, n.from_id))
+          .filter((n: any) => {
+            if (deletedNotifIds.has(String(n.id)) || !isAddressedToMe(n.to_id, n.to_name, n.from_id)) return false;
+            const nType = String(n.type || '').toLowerCase();
+            if ((nType === 'contact_join' || nType === 'contact_joined') && !activePrefs.inAppAlerts.contactJoin) {
+              return false;
+            }
+            if (nType === 'direct_message' && !activePrefs.inAppAlerts.directMessage) {
+              return false;
+            }
+            return true;
+          })
           .sort((a: any, b: any) => (Number(b.created_at) || 0) - (Number(a.created_at) || 0));
 
         const readNotifIds = getReadNotificationIdsSet();
@@ -7182,8 +7552,16 @@ export function App() {
               ]);
             });
 
+            const dmIdStr = String(dm.id);
+            const isBrandNewIncoming = !seenIncomingDmIdsRef.current.has(dmIdStr);
+            seenIncomingDmIdsRef.current.add(dmIdStr);
+            if (isBrandNewIncoming && hasCompletedInitialDmSyncRef.current && userPreferencesRef.current.inAppAlerts.directMessage) {
+              sound.playScan();
+              triggerToast(`💬 New Direct Message from ${senderName}`, { kind: 'direct_message' });
+            }
+
             setChatMessages((prev) => {
-              const existingIdx = prev.findIndex((msg) => msg.id === String(dm.id));
+              const existingIdx = prev.findIndex((msg) => msg.id === dmIdStr);
               if (existingIdx !== -1) {
                 if (prev[existingIdx].text !== String(dm.text || '')) {
                   const updated = [...prev];
@@ -7201,7 +7579,7 @@ export function App() {
               return [
                 ...prev,
                 {
-                  id: String(dm.id),
+                  id: dmIdStr,
                   contactId: targetContactId,
                   sender: 'them',
                   text: String(dm.text || ''),
@@ -7214,6 +7592,7 @@ export function App() {
             });
           }
         }
+        hasCompletedInitialDmSyncRef.current = true;
 
         // 4. Collect & Synchronize Public Peer Endorsements across all accounts (IndexedDB, localStorage, and Backend SQLite)
         const endMap = new Map<string, any>();
@@ -8979,23 +9358,35 @@ export function App() {
   // -------------------------------------------------------------
   // 4-Day Anti-Tamper Retention Lock Delete Handler
   // -------------------------------------------------------------
-  const handleDeleteScanLog = (log: ScanLog) => {
+  const handleDeleteScanLog = async (log: ScanLog) => {
     const FOUR_DAYS_MS = 4 * 24 * 60 * 60 * 1000;
-    const ageMs = Date.now() - (log.createdAt || Date.now());
-    if (ageMs < FOUR_DAYS_MS) {
+    const remainingMs = Math.max(0, (log.createdAt || Date.now()) + FOUR_DAYS_MS - Date.now());
+    if (remainingMs > 0) {
       sound.playClick();
-      triggerToast("⚠️ Security Hold: Industrial diagnostic scans cannot be altered or removed from the ledger within 4 days of capture.");
+      const remDays = Math.floor(remainingMs / (24 * 60 * 60 * 1000));
+      const remHours = Math.floor((remainingMs % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+      triggerToast(`⚠️ Security Hold: Protected under 4-day anti-tamper lock. Deletion available in ${remDays} days and ${remHours} hours.`);
       return;
     }
 
     sound.playClick();
-    deleteScanLogFromIndexedDB(log.id).catch(() => {});
+    // Delete from IndexedDB and local ledger
+    await deleteScanLogFromIndexedDB(log.id).catch(() => {});
+    // Attempt backend delete call
+    try {
+      fetch(`${getBackendBaseUrl()}/api/inspections/media/${encodeURIComponent(log.id)}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' }
+      }).catch(() => {});
+    } catch {}
+
     setScanLogs((prev) => {
       const updated = prev.filter((item) => item.id !== log.id);
       safeSaveScanLogsToLocalStorage(updated);
       return updated;
     });
-    triggerToast(`🗑️ Diagnostic record #${log.totalInspections} purged after mandatory 4-day retention cycle.`);
+    // Critical: Media deletion does NOT decrement userInspectionsConducted or totalScans
+    triggerToast(`🗑️ Diagnostic media purged after 4-day retention cycle. Total Scans and Inspection metrics remain permanently preserved.`);
   };
 
   // Export Fraud-Proof Ledger as CSV
@@ -9253,6 +9644,284 @@ export function App() {
     setContextMenuPost(null);
     setConfirmDeletePost(false);
     triggerToast('🗑️ Your post has been permanently deleted.');
+  };
+
+  const handleConfirmLogoutProceed = () => {
+    sound.playClick();
+    saveCurrentAccountVault();
+    void logoutSession();
+    setPreferencesSyncError(null);
+    seenIncomingDmIdsRef.current.clear();
+    hasCompletedInitialDmSyncRef.current = false;
+    appUpdateCheckedRef.current = false;
+    try {
+      localStorage.setItem('chixus_explicit_logout_v1', 'true');
+      localStorage.setItem('chixus_onboard_stage_v1', 'login');
+    } catch {}
+    setShowLogoutConfirmModal(false);
+    setIsDossierDrawerOpen(false);
+    setIsSideDrawerOpen(false);
+    setIsNetworkAdminDrawerOpen(false);
+    setIsSettingsDrawerOpen(false);
+    setIsHelpCenterDrawerOpen(false);
+    triggerToast('🔒 Operator session logged out. Node locked.');
+    setOnboardStage('login');
+  };
+
+  const renderLogoutConfirmModal = () => {
+    if (!showLogoutConfirmModal) return null;
+    return (
+      <div
+        id="logout-confirmation-modal-backdrop"
+        style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          zIndex: 1000005,
+          backgroundColor: 'rgba(3, 6, 12, 0.88)',
+          backdropFilter: 'blur(8px)',
+          WebkitBackdropFilter: 'blur(8px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '16px',
+          boxSizing: 'border-box'
+        }}
+        onClick={() => setShowLogoutConfirmModal(false)}
+      >
+        <div
+          style={{
+            width: '100%',
+            maxWidth: '420px',
+            backgroundColor: '#0c101a',
+            border: '1px solid rgba(239, 68, 68, 0.45)',
+            borderRadius: '16px',
+            padding: '24px',
+            boxShadow: '0 25px 60px rgba(0, 0, 0, 0.95), 0 0 35px rgba(239, 68, 68, 0.2)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '16px',
+            boxSizing: 'border-box'
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <div
+              style={{
+                width: '40px',
+                height: '40px',
+                borderRadius: '10px',
+                backgroundColor: 'rgba(239, 68, 68, 0.15)',
+                border: '1px solid rgba(239, 68, 68, 0.4)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0
+              }}
+            >
+              <LogOut style={{ width: '20px', height: '20px', color: '#f87171' }} />
+            </div>
+            <div>
+              <div style={{ fontSize: '15px', fontWeight: 900, fontFamily: 'monospace', color: '#ffffff', letterSpacing: '0.5px' }}>
+                ARE YOU SURE?
+              </div>
+              <div style={{ fontSize: '11px', fontFamily: 'monospace', color: '#94a3b8' }}>
+                Sovereign Node Lock
+              </div>
+            </div>
+          </div>
+
+          <div
+            style={{
+              fontSize: '12px',
+              color: '#cbd5e1',
+              fontFamily: 'monospace',
+              lineHeight: 1.6,
+              background: '#070a12',
+              padding: '14px 16px',
+              borderRadius: '10px',
+              border: '1px solid #1a2233'
+            }}
+          >
+            Are you sure you want to log out of your sovereign node? Your local session will be locked, and you will need to re-authenticate with your Operator ID and 4-digit code to log back in.
+          </div>
+
+          <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
+            <button
+              type="button"
+              id="cancel-logout-confirm-btn"
+              onClick={() => {
+                sound.playClick();
+                setShowLogoutConfirmModal(false);
+              }}
+              style={{
+                flex: 1,
+                padding: '11px 16px',
+                borderRadius: '8px',
+                background: '#1a2233',
+                border: '1px solid #334155',
+                color: '#cbd5e1',
+                fontSize: '12px',
+                fontFamily: 'monospace',
+                fontWeight: 700,
+                cursor: 'pointer',
+                transition: 'all 0.2s ease'
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              id="proceed-logout-confirm-btn"
+              onClick={handleConfirmLogoutProceed}
+              style={{
+                flex: 1,
+                padding: '11px 16px',
+                borderRadius: '8px',
+                background: 'linear-gradient(135deg, #dc2626 0%, #b91c1c 100%)',
+                border: '1px solid #ef4444',
+                color: '#ffffff',
+                fontSize: '12px',
+                fontFamily: 'monospace',
+                fontWeight: 900,
+                cursor: 'pointer',
+                boxShadow: '0 4px 14px rgba(220, 38, 38, 0.45)',
+                transition: 'all 0.2s ease'
+              }}
+            >
+              Yes, Log Out
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderAccountVerificationModal = () => {
+    if (!accountVerificationModal) return null;
+    const isPhone = accountVerificationModal.type === 'phone_change';
+    return (
+      <div
+        id="account-verification-modal-backdrop"
+        style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          zIndex: 1000008,
+          backgroundColor: 'rgba(3, 6, 12, 0.88)',
+          backdropFilter: 'blur(8px)',
+          WebkitBackdropFilter: 'blur(8px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '16px',
+          boxSizing: 'border-box'
+        }}
+        onClick={() => {
+          if (accountVerificationModal.status !== 'verifying') {
+            setAccountVerificationModal(null);
+          }
+        }}
+      >
+        <div
+          style={{
+            width: '100%',
+            maxWidth: '430px',
+            backgroundColor: '#0c101a',
+            border:
+              accountVerificationModal.status === 'success'
+                ? '1px solid rgba(16, 185, 129, 0.55)'
+                : accountVerificationModal.status === 'error'
+                ? '1px solid rgba(239, 68, 68, 0.55)'
+                : '1px solid rgba(56, 189, 248, 0.45)',
+            borderRadius: '16px',
+            padding: '24px',
+            boxShadow: '0 25px 60px rgba(0, 0, 0, 0.95)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '14px',
+            boxSizing: 'border-box'
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            {accountVerificationModal.status === 'success' ? (
+              <CheckCircle2 style={{ width: '24px', height: '24px', color: '#10b981', flexShrink: 0 }} />
+            ) : accountVerificationModal.status === 'error' ? (
+              <AlertTriangle style={{ width: '24px', height: '24px', color: '#f87171', flexShrink: 0 }} />
+            ) : (
+              <Activity style={{ width: '24px', height: '24px', color: '#38bdf8', flexShrink: 0, animation: 'spin 1.5s linear infinite' }} />
+            )}
+            <div>
+              <div style={{ fontSize: '14px', fontWeight: 900, fontFamily: 'monospace', color: '#ffffff' }}>
+                {isPhone ? 'PHONE NUMBER CHANGE VERIFICATION' : 'EMAIL ADDRESS CHANGE VERIFICATION'}
+              </div>
+              <div style={{ fontSize: '11px', fontFamily: 'monospace', color: '#94a3b8' }}>
+                {accountVerificationModal.status === 'verifying'
+                  ? 'Confirming authorization token...'
+                  : accountVerificationModal.status === 'success'
+                  ? 'Verified & Synchronized'
+                  : 'Verification Failed'}
+              </div>
+            </div>
+          </div>
+
+          <div
+            style={{
+              fontSize: '12px',
+              color: '#cbd5e1',
+              fontFamily: 'monospace',
+              lineHeight: 1.6,
+              background: '#070a12',
+              padding: '14px 16px',
+              borderRadius: '10px',
+              border: '1px solid #1a2233'
+            }}
+          >
+            <div>{accountVerificationModal.message}</div>
+            {accountVerificationModal.updatedValue && (
+              <div style={{ marginTop: '8px', color: '#10b981', fontWeight: 700 }}>
+                Updated {isPhone ? 'Phone' : 'Email'}: {accountVerificationModal.updatedValue}
+              </div>
+            )}
+            {accountVerificationModal.chixusId && (
+              <div style={{ marginTop: '4px', color: '#38bdf8', fontSize: '11px' }}>
+                Permanent CHIXUS ID (Unchanged): {accountVerificationModal.chixusId}
+              </div>
+            )}
+          </div>
+
+          {accountVerificationModal.status !== 'verifying' && (
+            <button
+              type="button"
+              id="close-account-verification-modal-btn"
+              onClick={() => {
+                sound.playClick();
+                setAccountVerificationModal(null);
+              }}
+              style={{
+                width: '100%',
+                padding: '11px 16px',
+                borderRadius: '8px',
+                background: 'linear-gradient(135deg, #0284c7 0%, #0ea5e9 100%)',
+                border: 'none',
+                color: '#ffffff',
+                fontSize: '12px',
+                fontFamily: 'monospace',
+                fontWeight: 900,
+                cursor: 'pointer'
+              }}
+            >
+              Continue
+            </button>
+          )}
+        </div>
+      </div>
+    );
   };
 
   const handleCircuitImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -9752,7 +10421,7 @@ export function App() {
     sound.playClick();
     const pid = String(post.id);
     setExpandedPostEducations((prev) => ({ ...prev, [pid]: true }));
-    logUserActivity(`Asked CHIXUS AI to read & educate on post by ${post.author}`);
+    logUserActivity(`Asked Qorvex to read & educate on post by ${post.author}`);
 
     const bcp47 = activeTribeDiagnostics.bcp47 || 'en-US';
 
@@ -9808,7 +10477,7 @@ export function App() {
     setSpeakingChatMsgId(null);
     setSpeakingPostId(pid);
     speakTribeNarrative(lessonText, bcp47, () => setSpeakingPostId(null));
-    triggerToast(`📚 CHIXUS AI is reading & educating you on ${post.author}'s post!`);
+    triggerToast(`📚 Qorvex is reading & educating you on ${post.author}'s post!`);
   };
 
   const buildFallbackVoiceNoteWavDataUrl = (durationSec: number): string => {
@@ -9986,7 +10655,7 @@ export function App() {
     const attachedFile = chatFileAttachment || undefined;
     const attachedAudio = activeVoiceNoteUrl || undefined;
     const attachedAudioTrans = chatVoiceNoteTranscript || undefined;
-    const isChixusAiBot = targetContactId === CHIXUS_AI_BOT_ID || currentPeer?.name === 'CHIXUS AI';
+    const isChixusAiBot = targetContactId === CHIXUS_AI_BOT_ID || currentPeer?.name === 'Qorvex' || currentPeer?.name === 'Qordex' || currentPeer?.name === 'CHIXUS AI';
     const myOpId = getMyActiveNodeId() || currentUserProfile?.secretId || generatedSecretID || localStorage.getItem('chixus_generated_secret_id') || '';
     const nowMs = Date.now();
     const timeStr = new Date(nowMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -10094,8 +10763,27 @@ export function App() {
     }
 
     if (isChixusAiBot) {
+      const activeAiLevel = userPreferencesRef.current.aiAccessLevel;
+      if (activeAiLevel === 'none' || activeAiLevel === 'no_message_allow_other') {
+        const blockedReply: ChatMessage = {
+          id: `reply-blocked-${Date.now()}`,
+          contactId: targetContactId,
+          sender: 'them',
+          text:
+            activeAiLevel === 'none'
+              ? 'CHIXUS AI access is currently disabled in Settings > Privacy & Safety ("Do not grant CHIXUS AI access"). Enable AI permissions there to ask Qorvex in Direct Messages.'
+              : 'CHIXUS AI is restricted from accessing Direct Messages under your current Settings > Privacy & Safety preference ("Deny message access, allow everywhere else").',
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          deliveryStatus: 'read'
+        };
+        setChatMessages((prev) =>
+          prev.map((m) => (m.id === msgId ? { ...m, deliveryStatus: 'read' as const } : m)).concat([blockedReply])
+        );
+        return;
+      }
+
       logUserActivity(
-        `Asked CHIXUS AI: "${displayMsgText.slice(0, 70)}"${attachedImg ? ' (with image)' : ''}${attachedFile ? ` (with file ${attachedFile.name})` : ''}${attachedAudio ? ' (with voice note)' : ''}`
+        `Asked Qorvex: "${displayMsgText.slice(0, 70)}"${attachedImg ? ' (with image)' : ''}${attachedFile ? ` (with file ${attachedFile.name})` : ''}${attachedAudio ? ' (with voice note)' : ''}`
       );
       setIsChixusAiTyping(true);
       const liveContext = buildLiveAppContext();
@@ -10136,7 +10824,7 @@ export function App() {
       moveContactToTop(targetContactId);
       sound.playClick();
 
-      // When a file is sent to CHIXUS AI, automatically read what is inside aloud as well
+      // When a file is sent to Qorvex, automatically read what is inside aloud as well
       if (attachedFile && cleanedReply) {
         stopTribeVoice();
         setSpeakingPostId(null);
@@ -10294,7 +10982,7 @@ export function App() {
           id: `msg-chixus-ai-${Date.now()}`,
           contactId: CHIXUS_AI_BOT_ID,
           sender: 'them',
-          text: 'Hello Operator! I am CHIXUS AI, your intelligent assistant. Ask me any question about the CHIXUS app, your posts, other operators\' posts, or Electrical, Electronics, and Mechanical engineering!',
+          text: 'Hello Operator! I am Qorvex, your intelligent assistant. Ask me any question about the CHIXUS app, your posts, other operators\' posts, or Electrical, Electronics, and Mechanical engineering!',
           timestamp: 'Online'
         },
         ...prev
@@ -10302,7 +10990,7 @@ export function App() {
     });
     setActiveContactId(CHIXUS_AI_BOT_ID);
     setIsChatOpen(true);
-    triggerToast('🤖 CHIXUS AI Bot chat opened!');
+    triggerToast('🤖 Qorvex Bot chat opened!');
   };
 
   // -------------------------------------------------------------
@@ -10963,7 +11651,7 @@ export function App() {
                       letterSpacing: '0.5px'
                     }}
                   >
-                    ENTER YOUR OPERATOR ID OR EMAIL
+                    ENTER YOUR UNIQUE CHIXUS ID
                   </label>
                   <div
                     className="futuristic-dark-input"
@@ -10973,16 +11661,14 @@ export function App() {
                       background: 'rgba(8, 11, 18, 0.92)',
                       border:
                         userIdInput.trim().length > 0 &&
-                        !/^CHI-[A-Z0-9]{4}-[A-Z]{2,3}$/i.test(userIdInput.trim()) &&
-                        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(userIdInput.trim())
+                        !/^CHI-[A-Z0-9]{4}-[A-Z]{2,3}$/i.test(userIdInput.trim())
                           ? '1.5px solid #ef4444'
                           : '1px solid rgba(148, 163, 184, 0.28)',
                       borderRadius: '10px',
                       padding: '0 12px',
                       boxShadow:
                         userIdInput.trim().length > 0 &&
-                        !/^CHI-[A-Z0-9]{4}-[A-Z]{2,3}$/i.test(userIdInput.trim()) &&
-                        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(userIdInput.trim())
+                        !/^CHI-[A-Z0-9]{4}-[A-Z]{2,3}$/i.test(userIdInput.trim())
                           ? '0 0 12px rgba(239, 68, 68, 0.35), inset 0 2px 4px rgba(0, 0, 0, 0.6)'
                           : 'inset 0 2px 4px rgba(0, 0, 0, 0.6)',
                       transition: 'all 0.2s ease'
@@ -10994,8 +11680,7 @@ export function App() {
                         height: '16px',
                         color:
                           userIdInput.trim().length > 0 &&
-                          !/^CHI-[A-Z0-9]{4}-[A-Z]{2,3}$/i.test(userIdInput.trim()) &&
-                          !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(userIdInput.trim())
+                          !/^CHI-[A-Z0-9]{4}-[A-Z]{2,3}$/i.test(userIdInput.trim())
                             ? '#ef4444'
                             : '#38bdf8',
                         marginRight: '10px',
@@ -11010,7 +11695,7 @@ export function App() {
                         setUserIdInput(e.target.value);
                         if (toastFeedback) setToastFeedback(null);
                       }}
-                      placeholder="e.g. CHI-2022-NG or josephchinaza645@gmail.com"
+                      placeholder="e.g. CHI-2022-NG"
                       style={{
                         flex: 1,
                         background: 'transparent',
@@ -11030,8 +11715,7 @@ export function App() {
                     />
                   </div>
                   {userIdInput.trim().length > 0 &&
-                    !/^CHI-[A-Z0-9]{4}-[A-Z]{2,3}$/i.test(userIdInput.trim()) &&
-                    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(userIdInput.trim()) && (
+                    !/^CHI-[A-Z0-9]{4}-[A-Z]{2,3}$/i.test(userIdInput.trim()) && (
                       <div
                         id="login-invalid-id-alert"
                         style={{
@@ -11053,7 +11737,7 @@ export function App() {
                       >
                         <AlertTriangle style={{ width: '16px', height: '16px', color: '#ef4444', flexShrink: 0 }} />
                         <span style={{ letterSpacing: '0.4px' }}>
-                          Invalid Identifier — Please enter your unique Operator ID (e.g. CHI-2022-NG) or registered email address.
+                          Invalid ID — Please enter a valid CHIXUS ID (e.g. CHI-2022-NG).
                         </span>
                       </div>
                     )}
@@ -11149,219 +11833,111 @@ export function App() {
                   className={!userIdInput.trim() || !loginPasswordInput.trim() || isConnectingLoading ? '' : 'metallic-btn-interactive'}
                   disabled={!userIdInput.trim() || !loginPasswordInput.trim() || isConnectingLoading}
                   onClick={async () => {
-                    const rawInput = userIdInput.trim();
+                    const rawInput = userIdInput.trim().toUpperCase();
                     const passVal = loginPasswordInput.trim();
-                      if (! rawInput || !passVal || isConnectingLoading) {
+                    if (!rawInput || !passVal || isConnectingLoading) {
                       sound.playError();
-                      setToastFeedback('⚠️ Please enter your unique CHIXUS ID and private password.');
+                      setToastFeedback('⚠️ Please enter your CHIXUS ID and password.');
                       return;
                     }
 
-                    // Strict CHIXUS Hardware Node ID or registered Email format validation
                     const hardwareNodeIdPattern = /^CHI-[A-Z0-9]{4}-[A-Z]{2,3}$/i;
-                    const isEmailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawInput);
-                    if (!hardwareNodeIdPattern.test(rawInput) && !isEmailPattern) {
+                    if (!hardwareNodeIdPattern.test(rawInput)) {
                       sound.playError();
-                      setToastFeedback('❌ Invalid Identifier — Enter your Operator ID (e.g. CHI-2022-NG) or registered email address.');
+                      setToastFeedback('❌ Invalid ID — Please enter a valid CHIXUS ID (e.g. CHI-2022-NG).');
                       return;
                     }
 
-                    const inputVal = rawInput.toUpperCase();
-                    const cleanEmailVal = rawInput.toLowerCase();
                     sound.playClick();
                     setIsConnectingLoading(true);
+                    setPreferencesSyncError(null);
 
                     try {
-                      let authenticatedUser: any = null;
-                      let idExistsButWrongPassword = false;
+                      const session = await loginWithIdentifier(rawInput, passVal);
+                      const authenticatedUser = session.user;
+                      const prevActiveId = getMyActiveNodeId();
+                      const opId = (authenticatedUser.chixus_id || rawInput).toUpperCase();
+                      if (prevActiveId && prevActiveId !== opId) {
+                        saveCurrentAccountVault(prevActiveId);
+                      }
 
-                      // 1. Primary Authoritative Check: Backend SQLite Database Lookup (Strictly verify ID/Email and 4-digit code on backend first)
+                      const isChinazaOp = opId === 'CHI-7649-NG' || opId === 'CHI-4591-NG';
+                      const opFullName = authenticatedUser.full_name || opId;
+                      const opLocation = authenticatedUser.location || 'Sector Relay // Nigeria';
+                      const rawOpHeadline = authenticatedUser.headline || '';
+                      const opHeadline = rawOpHeadline === 'CHIXUS Hardware & Grid Operator' ? '' : rawOpHeadline;
+
+                      const rawAuthAv = authenticatedUser.avatar_url || '';
+                      const cleanAuthAv =
+                        rawAuthAv && !String(rawAuthAv).includes('dicebear.com')
+                          ? rawAuthAv
+                          : isChinazaOp
+                          ? chinazaAvatar
+                          : defaultBlankOperatorAvatar;
+                      const cleanAuthCov = authenticatedUser.cover_url || metallicBanner;
+
+                      const profileObj = {
+                        internalId: authenticatedUser.internal_id || opId,
+                        username: authenticatedUser.username || opId,
+                        fullName: opFullName,
+                        location: opLocation,
+                        email: authenticatedUser.email || '',
+                        phoneNumber: authenticatedUser.phone_number || '',
+                        pendingPhone: authenticatedUser.pending_phone ?? null,
+                        pendingEmail: authenticatedUser.pending_email ?? null,
+                        secretId: opId,
+                        headline: opHeadline,
+                        inspectionsConducted: authenticatedUser.inspections_conducted ?? 0,
+                        faultsIsolated: authenticatedUser.faults_isolated ?? 0,
+                        aiScanAccuracy: authenticatedUser.ai_scan_accuracy || '0.0%',
+                        avatarUrl: cleanAuthAv,
+                        coverUrl: cleanAuthCov,
+                        summary: authenticatedUser.summary || '',
+                        experiences: []
+                      };
+
+                      await hydrateOrResetAccountVault(opId, profileObj, false);
+
                       try {
-                        const controller = new AbortController();
-                        const timeoutId = setTimeout(() => controller.abort(), 10000);
-                        const cleanVal = rawInput.replace(/'/g, "''");
-                        const sqlQuery = `SELECT * FROM users WHERE UPPER(TRIM(id))=UPPER('${cleanVal}') OR UPPER(TRIM(username))=UPPER('${cleanVal}') OR LOWER(TRIM(email))=LOWER('${cleanVal}') LIMIT 1`;
-                        const sqlRes = await fetch(`${API_BASE_URL}/api/admin/sql?key=chixus_admin_2026&query=${encodeURIComponent(sqlQuery)}`, {
-                          signal: controller.signal
-                        });
-                        clearTimeout(timeoutId);
-                        const sqlData = await sqlRes.json().catch(() => null);
-                        if (sqlRes.ok && sqlData && sqlData.status === 'success' && Array.isArray(sqlData.data) && sqlData.data.length > 0) {
-                          const row = sqlData.data[0];
-                          const storedHashOrPin = String(row.password_hash || '').trim();
-                          if (storedHashOrPin === passVal) {
-                            authenticatedUser = row;
-                          } else {
-                            idExistsButWrongPassword = true;
-                          }
-                        }
+                        safeSetLocalStorage('chixus_terms_accepted_v1', 'true');
+                        localStorage.removeItem('chixus_explicit_logout_v1');
+                        safeSetLocalStorage('chixus_onboard_stage_v1', 'main_app');
                       } catch {}
 
-                      // 2. Backend Auth Endpoint (/api/auth/login) strictly verifying ID or Email + Password
-                      if (!authenticatedUser && !idExistsButWrongPassword) {
+                      setCurrentUserProfile(profileObj);
+                      setGeneratedSecretID(opId);
+                      setRegPhoneNumber(profileObj.phoneNumber);
+                      setRegEmail(profileObj.email);
+                      setUserName(profileObj.fullName);
+                      setUserLocation(profileObj.location);
+                      setUserHeadline(profileObj.headline);
+
+                      if (session.preferences) {
+                        applyPreferencesLocally(session.preferences, opId);
+                      } else if (session.token) {
                         try {
-                          const controller = new AbortController();
-                          const timeoutId = setTimeout(() => controller.abort(), 10000);
-                          const res = await fetch(`${API_BASE_URL}/api/auth/login`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                              node_id: inputVal,
-                              operator_id: inputVal,
-                              email: cleanEmailVal,
-                              password: passVal
-                            }),
-                            signal: controller.signal
-                          });
-                          clearTimeout(timeoutId);
-                          const data = await res.json().catch(() => null);
-                          if (res.ok && data && (data.authenticated || data.status === 'success' || data.operator || data.user)) {
-                            authenticatedUser = data.operator || data.user || { id: inputVal, full_name: inputVal };
-                          }
-                        } catch {}
-                      }
-
-                      // 3. Fallback Local Enclave Registry by CHIXUS Node ID or Email AND 4-digit password
-                      const localSavedId = localStorage.getItem('chixus_generated_secret_id');
-                      const localProfileRaw = localStorage.getItem('chixus_current_user_profile');
-                      const registeredListRaw = localStorage.getItem('chixus_registered_users');
-
-                      let matchedLocal: any = null;
-                      if (registeredListRaw) {
-                        try {
-                          const parsedList = JSON.parse(registeredListRaw);
-                          if (Array.isArray(parsedList)) {
-                            matchedLocal = parsedList.find((u: any) =>
-                              (u.secretId && u.secretId.trim().toUpperCase() === inputVal) ||
-                              (u.frontendId && u.frontendId.trim().toUpperCase() === inputVal) ||
-                              (u.backendId && u.backendId.trim().toUpperCase() === inputVal) ||
-                              (u.email && u.email.trim().toLowerCase() === cleanEmailVal)
-                            );
-                          }
-                        } catch {}
-                      }
-
-                      if (!matchedLocal && localProfileRaw) {
-                        try {
-                          const parsed = JSON.parse(localProfileRaw);
-                          if (
-                            (localSavedId && localSavedId.trim().toUpperCase() === inputVal) ||
-                            (parsed.secretId && parsed.secretId.trim().toUpperCase() === inputVal) ||
-                            (parsed.email && parsed.email.trim().toLowerCase() === cleanEmailVal)
-                          ) {
-                            matchedLocal = parsed;
-                          }
-                        } catch {}
-                      }
-
-                      if (!authenticatedUser && !idExistsButWrongPassword && matchedLocal && matchedLocal.password) {
-                        if (String(matchedLocal.password).trim() === passVal) {
-                          authenticatedUser = {
-                            id: matchedLocal.secretId || localSavedId || inputVal,
-                            full_name: matchedLocal.fullName || inputVal,
-                            username: matchedLocal.username || inputVal,
-                            location: matchedLocal.location || 'Sector Relay // Nigeria',
-                            headline: matchedLocal.headline === 'CHIXUS Hardware & Grid Operator' ? '' : (matchedLocal.headline || ''),
-                            inspections_conducted: matchedLocal.inspectionsConducted || 0,
-                            faults_isolated: matchedLocal.faultsIsolated || 0,
-                            ai_scan_accuracy: matchedLocal.aiScanAccuracy || '0.0%',
-                            avatar_url: matchedLocal.avatarUrl || '',
-                            cover_url: matchedLocal.coverUrl || '',
-                            summary: matchedLocal.summary || '',
-                            experiences: matchedLocal.experiences || [],
-                            email: matchedLocal.email || '',
-                            phone: matchedLocal.phoneNumber || '',
-                            password: matchedLocal.password
-                          };
-                        } else {
-                          idExistsButWrongPassword = true;
+                          const backendPrefs = await fetchUserPreferences();
+                          applyPreferencesLocally(backendPrefs, opId);
+                        } catch (prefErr: unknown) {
+                          const prefMsg =
+                            prefErr instanceof Error ? prefErr.message : 'Unable to fetch saved settings.';
+                          setPreferencesSyncError(prefMsg);
                         }
                       }
 
-                      if (authenticatedUser) {
-                        const prevActiveId = getMyActiveNodeId();
-                        const opId = (authenticatedUser.id || authenticatedUser.node_id || authenticatedUser.secretId || inputVal).toUpperCase();
-                        if (prevActiveId && prevActiveId !== opId) {
-                          saveCurrentAccountVault(prevActiveId);
-                        }
-
-                        const isChinazaOp = opId === 'CHI-7649-NG' || opId === 'CHI-4591-NG';
-                        const opFullName = authenticatedUser.full_name || authenticatedUser.name || matchedLocal?.fullName || inputVal;
-                        const opLocation = authenticatedUser.location || matchedLocal?.location || 'Sector Relay // Nigeria';
-                        const rawOpHeadline = authenticatedUser.headline ?? matchedLocal?.headline ?? '';
-                        const opHeadline = rawOpHeadline === 'CHIXUS Hardware & Grid Operator' ? '' : rawOpHeadline;
-
-                        const rawAuthAv = authenticatedUser.avatar_url || authenticatedUser.avatar || matchedLocal?.avatarUrl || '';
-                        const cleanAuthAv =
-                          rawAuthAv && !String(rawAuthAv).includes('dicebear.com')
-                            ? rawAuthAv
-                            : isChinazaOp
-                            ? chinazaAvatar
-                            : defaultBlankOperatorAvatar;
-                        const cleanAuthCov = authenticatedUser.cover_url || matchedLocal?.coverUrl || metallicBanner;
-
-                        const preservedEmail = authenticatedUser.email || matchedLocal?.email || '';
-                        const preservedPhone = authenticatedUser.phone || authenticatedUser.phone_number || matchedLocal?.phoneNumber || '';
-
-                        const profileObj = {
-                          username: authenticatedUser.username || opId,
-                          fullName: opFullName,
-                          location: opLocation,
-                          email: preservedEmail,
-                          phoneNumber: preservedPhone,
-                          secretId: opId,
-                          headline: opHeadline,
-                          inspectionsConducted: authenticatedUser.inspections_conducted ?? authenticatedUser.inspections ?? matchedLocal?.inspectionsConducted ?? 0,
-                          faultsIsolated: authenticatedUser.faults_isolated ?? authenticatedUser.faults ?? matchedLocal?.faultsIsolated ?? 0,
-                          aiScanAccuracy: authenticatedUser.ai_scan_accuracy || authenticatedUser.accuracy || matchedLocal?.aiScanAccuracy || '0.0%',
-                          avatarUrl: cleanAuthAv,
-                          coverUrl: cleanAuthCov,
-                          summary: authenticatedUser.summary || matchedLocal?.summary || '',
-                          experiences: authenticatedUser.experiences || matchedLocal?.experiences || [],
-                          password: passVal
-                        };
-
-                        await hydrateOrResetAccountVault(opId, profileObj, false);
-
-                        try {
-                          safeSetLocalStorage('chixus_terms_accepted_v1', 'true');
-                          localStorage.removeItem('chixus_explicit_logout_v1');
-                          safeSetLocalStorage('chixus_onboard_stage_v1', 'main_app');
-
-                          const existingAccountsRaw = localStorage.getItem('chixus_registered_users');
-                          const accountsList = existingAccountsRaw ? JSON.parse(existingAccountsRaw) : [];
-                          const idx = Array.isArray(accountsList)
-                            ? accountsList.findIndex((u: any) => (u.secretId || '').toUpperCase() === opId)
-                            : -1;
-                          if (idx >= 0) {
-                            accountsList[idx] = {
-                              ...accountsList[idx],
-                              ...profileObj,
-                              email: preservedEmail || accountsList[idx].email || '',
-                              phoneNumber: preservedPhone || accountsList[idx].phoneNumber || '',
-                              password: passVal
-                            };
-                          } else if (Array.isArray(accountsList)) {
-                            accountsList.push({ ...profileObj, frontendId: opId, backendId: opId, password: passVal });
-                          }
-                          safeSetLocalStorage('chixus_registered_users', JSON.stringify(accountsList));
-                        } catch {}
-
-                        setCurrentUserProfile(profileObj);
-                        setShowTermsAgreementModal(false);
-                        setOnboardStage('main_app');
-                        sound.playSuccess();
-                        triggerToast(`✨ Operator Node Connected: ${opId}`);
-                      } else if (idExistsButWrongPassword) {
-                        sound.playError();
-                        setToastFeedback(`❌ Incorrect 4-Digit Code — The password entered for CHIXUS ID '${inputVal}' is wrong. Access denied.`);
-                      } else {
-                        sound.playError();
-                        setToastFeedback(`❌ Unregistered CHIXUS ID — No operator account was found with ID '${inputVal}'. Please verify your credentials or register a new account.`);
-                      }
-                    } catch {
+                      setShowTermsAgreementModal(false);
+                      setOnboardStage('main_app');
+                      sound.playSuccess();
+                      triggerToast(`✨ Operator Node Connected: ${opId}`);
+                    } catch (err: unknown) {
                       sound.playError();
-                      setToastFeedback(`❌ Unregistered CHIXUS ID — No operator account exists with ID '${inputVal}' or password is incorrect.`);
+                      const message =
+                        err instanceof ApiRequestError
+                          ? err.message
+                          : err instanceof Error
+                          ? err.message
+                          : 'Unable to authenticate with CHIXUS backend.';
+                      setToastFeedback(`❌ ${message}`);
                     } finally {
                       setIsConnectingLoading(false);
                     }
@@ -11477,6 +12053,86 @@ export function App() {
                     <Key style={{ width: '12px', height: '12px' }} />
                     <span>Forgotten ID and Password</span>
                   </button>
+
+                  {/* Clean, Simple Policy Links for Login Screen */}
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px',
+                      marginTop: '12px',
+                      fontSize: '10.5px',
+                      fontFamily: 'monospace',
+                      color: '#64748b'
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        sound.playClick();
+                        setActivePolicyModal('privacy');
+                      }}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        padding: 0,
+                        color: '#94a3b8',
+                        fontSize: '10.5px',
+                        fontFamily: 'monospace',
+                        cursor: 'pointer',
+                        textDecoration: 'underline'
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.color = '#38bdf8')}
+                      onMouseLeave={(e) => (e.currentTarget.style.color = '#94a3b8')}
+                    >
+                      Privacy Policy
+                    </button>
+                    <span style={{ color: '#475569' }}>|</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        sound.playClick();
+                        setActivePolicyModal('safety');
+                      }}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        padding: 0,
+                        color: '#94a3b8',
+                        fontSize: '10.5px',
+                        fontFamily: 'monospace',
+                        cursor: 'pointer',
+                        textDecoration: 'underline'
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.color = '#38bdf8')}
+                      onMouseLeave={(e) => (e.currentTarget.style.color = '#94a3b8')}
+                    >
+                      Safety Policy
+                    </button>
+                    <span style={{ color: '#475569' }}>|</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        sound.playClick();
+                        setActivePolicyModal('terms');
+                      }}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        padding: 0,
+                        color: '#94a3b8',
+                        fontSize: '10.5px',
+                        fontFamily: 'monospace',
+                        cursor: 'pointer',
+                        textDecoration: 'underline'
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.color = '#38bdf8')}
+                      onMouseLeave={(e) => (e.currentTarget.style.color = '#94a3b8')}
+                    >
+                      Terms and Conditions
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -12019,46 +12675,34 @@ export function App() {
                         onClick={async () => {
                           sound.playClick();
                           setIsSendingCodeLoading(true);
+                          setRegVerificationError('');
                           try {
-                            let res: Response | null = null;
-                            try {
-                              res = await fetch(`${API_BASE_URL}/api/auth/send-verification-code`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ email: regEmail.trim(), fullName: regFullName.trim() })
-                              });
-                            } catch {
-                              if (API_BASE_URL) {
-                                res = await fetch(`/api/auth/send-verification-code`, {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ email: regEmail.trim(), fullName: regFullName.trim() })
-                                }).catch(() => null);
-                              }
-                            }
-                            const data = res ? await res.json().catch(() => ({})) : null;
+                            const res = await fetch(API_ENDPOINTS.AUTH_SEND_CODE(), {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                email: regEmail.trim(),
+                                fullName: regFullName.trim(),
+                                phone: `${regCountryPrefix} ${regPhoneNumber.trim()}`.trim()
+                              })
+                            });
+                            const data = await res.json().catch(() => null);
                             setIsSendingCodeLoading(false);
-                            if (res && res.ok && data?.code) {
-                              setPreviewSentCode(data.code);
+                            if (res.ok && data && data.status === 'sent') {
+                              if (data.code) setPreviewSentCode(data.code);
                               setRegCodeResendSeconds(60);
                               sound.playSuccess();
                               triggerToast(`✉️ New 6-digit verification code dispatched to ${regEmail.trim()}.`);
-                            } else if (data?.error) {
-                              setRegVerificationError(data.error);
-                              sound.playError();
                             } else {
-                              const fallbackCode = String(Math.floor(100000 + Math.random() * 900000));
-                              try {
-                                sessionStorage.setItem(`chixus_email_code_${regEmail.trim().toLowerCase()}`, fallbackCode);
-                              } catch {}
-                              setPreviewSentCode(fallbackCode);
-                              setRegCodeResendSeconds(60);
-                              sound.playSuccess();
-                              triggerToast(`✉️ New 6-digit verification code dispatched to ${regEmail.trim()}.`);
+                              setRegVerificationError(
+                                data?.error || data?.detail || data?.message || 'Unable to dispatch verification code from backend.'
+                              );
+                              sound.playError();
                             }
                           } catch {
                             setIsSendingCodeLoading(false);
-                            setRegVerificationError('Unable to dispatch verification code. Please check your connection.');
+                            sound.playError();
+                            setRegVerificationError('Unable to reach CHIXUS backend verification service. Please check your connection.');
                           }
                         }}
                         style={{
@@ -12364,58 +13008,22 @@ export function App() {
                       sound.playClick();
                       setIsSendingCodeLoading(true);
 
-                      const checkNameLower = trimmedName.toLowerCase();
-                      const checkEmailLower = trimmedEmail.toLowerCase();
-                      const inputPhoneTail = cleanPhoneDigits.slice(-9);
-
-                      // Primary check: Verify not duplicate in backend or local storage
+                      // Dispatch verification code strictly through backend security verification endpoint
                       try {
-                        const allUsersSql = `SELECT id, username, full_name, email, phone FROM users`;
-                        const dupRes = await fetch(`${API_BASE_URL}/api/admin/sql?key=chixus_admin_2026&query=${encodeURIComponent(allUsersSql)}`);
-                        const dupData = await dupRes.json().catch(() => null);
-                        if (dupRes.ok && dupData && dupData.status === 'success' && Array.isArray(dupData.data)) {
-                          for (const existingRow of dupData.data) {
-                            if (!existingRow) continue;
-                            const rowName = String(existingRow.full_name || '').trim().toLowerCase();
-                            const rowEmail = String(existingRow.email || '').trim().toLowerCase();
-                            const rowPhone = String(existingRow.phone || '').trim();
+                        const sendRes = await fetch(API_ENDPOINTS.AUTH_SEND_CODE(), {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            email: trimmedEmail,
+                            fullName: trimmedName,
+                            phone: `+${matchedRegion.codeDigits} ${trimmedPhone}`.trim(),
+                            phone_number: `+${matchedRegion.codeDigits} ${trimmedPhone}`.trim()
+                          })
+                        });
 
-                            const isPhoneDup = Boolean(inputPhoneTail && rowPhone.replace(/\D/g, '').slice(-9) === inputPhoneTail);
-                            const isEmailDup = Boolean(rowEmail && rowEmail === checkEmailLower);
+                        const sendData = await sendRes.json().catch(() => null);
 
-                            if (isPhoneDup || isEmailDup) {
-                              sound.playError();
-                              setIsSendingCodeLoading(false);
-                              const conflictField = isPhoneDup ? 'phone number' : 'email address';
-                              setToastFeedback(`❌ Already Registered — This ${conflictField} is already associated with an existing account. Please log in.`);
-                              return;
-                            }
-                          }
-                        }
-                      } catch {}
-
-                      // Dispatch verification code to user email via security verification service
-                      try {
-                        let sendRes: Response | null = null;
-                        try {
-                          sendRes = await fetch(`${API_BASE_URL}/api/auth/send-verification-code`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ email: trimmedEmail, fullName: trimmedName })
-                          });
-                        } catch {
-                          if (API_BASE_URL) {
-                            sendRes = await fetch(`/api/auth/send-verification-code`, {
-                              method: 'POST',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ email: trimmedEmail, fullName: trimmedName })
-                            }).catch(() => null);
-                          }
-                        }
-
-                        const sendData = sendRes ? await sendRes.json().catch(() => ({})) : null;
-
-                        if (sendRes && sendRes.ok && sendData && sendData.status === 'sent') {
+                        if (sendRes.ok && sendData && sendData.status === 'sent') {
                           setIsSendingCodeLoading(false);
                           if (sendData?.code) {
                             setPreviewSentCode(sendData.code);
@@ -12429,30 +13037,15 @@ export function App() {
                           return;
                         }
 
-                        if (sendData && sendData.error) {
-                          setIsSendingCodeLoading(false);
-                          sound.playError();
-                          setToastFeedback(sendData.error);
-                          return;
-                        }
-
-                        // Resilient local security generator if network service is unreachable
-                        const fallbackCode = String(Math.floor(100000 + Math.random() * 900000));
-                        try {
-                          sessionStorage.setItem(`chixus_email_code_${checkEmailLower}`, fallbackCode);
-                        } catch {}
                         setIsSendingCodeLoading(false);
-                        setPreviewSentCode(fallbackCode);
-                        setRegCodeResendSeconds(60);
-                        setRegVerificationCodeInput('');
-                        setRegVerificationError('');
-                        setRegStep('verify_email');
-                        sound.playSuccess();
-                        triggerToast(`✉️ A 6-digit verification code has been dispatched to ${trimmedEmail}.`);
+                        sound.playError();
+                        setToastFeedback(
+                          sendData?.error || sendData?.detail || sendData?.message || 'Unable to send verification code from CHIXUS backend.'
+                        );
                       } catch {
                         setIsSendingCodeLoading(false);
                         sound.playError();
-                        setToastFeedback('Unable to reach verification service. Please check your network connection.');
+                        setToastFeedback('Unable to reach CHIXUS backend verification service. Please check your network connection.');
                       }
                     }}
                     style={{
@@ -12500,36 +13093,15 @@ export function App() {
                       setRegVerificationError('');
 
                       try {
-                        let verifyRes: Response | null = null;
-                        try {
-                          verifyRes = await fetch(`${API_BASE_URL}/api/auth/verify-code`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ node_id: regEmail.trim(), email: regEmail.trim(), code: cleanCode })
-                          });
-                        } catch {
-                          if (API_BASE_URL) {
-                            verifyRes = await fetch(`/api/auth/verify-code`, {
-                              method: 'POST',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ node_id: regEmail.trim(), email: regEmail.trim(), code: cleanCode })
-                            }).catch(() => null);
-                          }
-                        }
+                        const verifyRes = await fetch(API_ENDPOINTS.AUTH_VERIFY_CODE(), {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ node_id: regEmail.trim(), email: regEmail.trim(), code: cleanCode })
+                        });
 
-                        const verifyData = verifyRes ? await verifyRes.json().catch(() => ({})) : null;
+                        const verifyData = await verifyRes.json().catch(() => null);
 
-                        if (verifyRes && verifyRes.ok && verifyData && verifyData.status === 'verified') {
-                          setIsVerifyingCodeLoading(false);
-                          sound.playSuccess();
-                          setRegStep('create_password');
-                          triggerToast('✅ Verification code confirmed! Proceed to create your password.');
-                          return;
-                        }
-
-                        // Check fallback session code
-                        const cachedFallbackCode = sessionStorage.getItem(`chixus_email_code_${regEmail.trim().toLowerCase()}`);
-                        if (cachedFallbackCode && cachedFallbackCode === cleanCode) {
+                        if (verifyRes.ok && verifyData && verifyData.status === 'verified') {
                           setIsVerifyingCodeLoading(false);
                           sound.playSuccess();
                           setRegStep('create_password');
@@ -12539,11 +13111,13 @@ export function App() {
 
                         setIsVerifyingCodeLoading(false);
                         sound.playError();
-                        setRegVerificationError(verifyData?.error || 'Invalid verification code. Please check your email and try again.');
+                        setRegVerificationError(
+                          verifyData?.error || verifyData?.detail || verifyData?.message || 'Invalid verification code. Please check your email and try again.'
+                        );
                       } catch {
                         setIsVerifyingCodeLoading(false);
                         sound.playError();
-                        setRegVerificationError('Connection error: Unable to complete verification.');
+                        setRegVerificationError('Connection error: Unable to reach CHIXUS backend for verification.');
                       }
                     }}
                     style={{
@@ -12601,17 +13175,10 @@ export function App() {
                       const activeSuffix = detectedRegion.suffix || 'NG';
                       const activeCountry = detectedRegion.country || 'Nigeria';
                       const formattedPhonePrefix = regCountryPrefix.startsWith('+') ? regCountryPrefix : `+${regCountryPrefix}`;
-                      const cleanPhoneDigits = regPhoneNumber.replace(/\D/g, '');
                       const fullCommsLine = `${formattedPhonePrefix} ${regPhoneNumber.trim()}`;
 
-                      // Generate specific 4-digit node number derived deterministically from the user's phone number
-                      const fullPhoneDigits = `${formattedPhonePrefix.replace(/\D/g, '')}${cleanPhoneDigits.replace(/^0+/, '')}`;
-                      let phoneHash = 0;
-                      for (let i = 0; i < fullPhoneDigits.length; i++) {
-                        phoneHash = (phoneHash * 31 + fullPhoneDigits.charCodeAt(i)) % 9000;
-                      }
-                      const phoneDerived4Digits = String(1000 + (phoneHash % 9000));
-                      let newGeneratedId = `CHI-${phoneDerived4Digits}-${activeSuffix}`;
+                      // Permanent CHIXUS ID must NEVER be derived from phone number (cryptographic non-phone random identifier)
+                      const candidateId = generateNonPhoneChixusId(activeSuffix);
 
                       // Save any previously logged-in account vault
                       const prevActiveId = getMyActiveNodeId();
@@ -12619,99 +13186,77 @@ export function App() {
                         saveCurrentAccountVault(prevActiveId);
                       }
 
-                      const profileObj = {
-                        username: newGeneratedId,
-                        fullName: regFullName.trim(),
-                        location: regLocation.trim(),
-                        email: regEmail.trim(),
-                        phoneNumber: fullCommsLine,
-                        inspectionsConducted: 0,
-                        faultsIsolated: 0,
-                        aiScanAccuracy: '0.0%',
-                        secretId: newGeneratedId,
-                        headline: regHeadline.trim() || '',
-                        avatarUrl: defaultBlankOperatorAvatar,
-                        coverUrl: metallicBanner,
-                        summary: '',
-                        experiences: [],
-                        starTier: '',
-                        billingRank: '',
-                        starLevel: 0
-                      };
-
-                      // Dispatch to backend registration API to persist node
-                      let finalAssignedId = newGeneratedId;
                       try {
-                        const controller = new AbortController();
-                        const timeoutId = setTimeout(() => controller.abort(), 10000);
-                        const res = await fetch(`${API_BASE_URL}/api/auth/register`, {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({
-                            operator_id: newGeneratedId,
-                            full_name: profileObj.fullName,
-                            username: profileObj.username || profileObj.fullName.toLowerCase().replace(/\s+/g, '_'),
-                            location: profileObj.location || 'Sector Relay // Nigeria',
-                            phone: profileObj.phoneNumber,
-                            phone_number: profileObj.phoneNumber,
-                            email: profileObj.email,
-                            password: trimmedPass,
-                            headline: profileObj.headline,
-                            country: activeCountry
-                          }),
-                          signal: controller.signal
+                        const regResult = await registerOperatorAccount({
+                          candidateChixusId: candidateId,
+                          fullName: regFullName.trim(),
+                          location: regLocation.trim(),
+                          phoneNumber: fullCommsLine,
+                          email: regEmail.trim(),
+                          password: trimmedPass,
+                          headline: regHeadline.trim() || '',
+                          country: activeCountry
                         });
-                        clearTimeout(timeoutId);
-                        const regData = await res.json().catch(() => ({}));
-                        if (regData && (regData.operator_id || regData.node_id)) {
-                          finalAssignedId = regData.operator_id || regData.node_id;
+
+                        const finalAssignedId = (regResult.user.chixus_id || candidateId).toUpperCase();
+                        const profileObj = {
+                          internalId: regResult.user.internal_id || finalAssignedId,
+                          username: regResult.user.username || finalAssignedId,
+                          fullName: regResult.user.full_name || regFullName.trim(),
+                          location: regResult.user.location || regLocation.trim(),
+                          email: regResult.user.email || regEmail.trim().toLowerCase(),
+                          phoneNumber: regResult.user.phone_number || fullCommsLine,
+                          pendingPhone: regResult.user.pending_phone ?? null,
+                          pendingEmail: regResult.user.pending_email ?? null,
+                          inspectionsConducted: regResult.user.inspections_conducted ?? 0,
+                          faultsIsolated: regResult.user.faults_isolated ?? 0,
+                          aiScanAccuracy: regResult.user.ai_scan_accuracy || '0.0%',
+                          secretId: finalAssignedId,
+                          headline: regResult.user.headline || regHeadline.trim() || '',
+                          avatarUrl: regResult.user.avatar_url || defaultBlankOperatorAvatar,
+                          coverUrl: regResult.user.cover_url || metallicBanner,
+                          summary: regResult.user.summary || '',
+                          experiences: [],
+                          starTier: '',
+                          billingRank: '',
+                          starLevel: 0
+                        };
+
+                        setCurrentUserProfile(profileObj);
+                        setGeneratedSecretID(finalAssignedId);
+                        await hydrateOrResetAccountVault(finalAssignedId, profileObj, true);
+
+                        if (regResult.preferences) {
+                          applyPreferencesLocally(regResult.preferences, finalAssignedId);
+                        } else {
+                          applyPreferencesLocally(DEFAULT_USER_PREFERENCES, finalAssignedId);
                         }
-                      } catch {}
 
-                      // SQLite sync
-                      try {
-                        const safeName = profileObj.fullName.replace(/'/g, "''");
-                        const safeLoc = (profileObj.location || 'Sector Relay // Nigeria').replace(/'/g, "''");
-                        const safeHead = (profileObj.headline || '').replace(/'/g, "''");
-                        const safePhone = profileObj.phoneNumber.replace(/'/g, "''");
-                        const safeEmail = profileObj.email.replace(/'/g, "''");
-                        const safePass = trimmedPass.replace(/'/g, "''");
-                        const safeBlankAv = defaultBlankOperatorAvatar.replace(/'/g, "''");
-                        const ensureSql = `INSERT OR IGNORE INTO users (id, username, full_name, location, phone, email, password_hash, headline, avatar, inspections, faults, accuracy) VALUES ('${finalAssignedId}', '${finalAssignedId}', '${safeName}', '${safeLoc}', '${safePhone}', '${safeEmail}', '${safePass}', '${safeHead}', '${safeBlankAv}', 0, 0, '0.0%')`;
-                        await fetch(`${API_BASE_URL}/api/admin/sql?key=chixus_admin_2026&query=${encodeURIComponent(ensureSql)}`).catch(() => {});
-                      } catch {}
+                        try {
+                          safeSaveUserProfileToStorage(profileObj);
+                          safeSetLocalStorage('chixus_generated_secret_id', finalAssignedId);
+                          safeSetLocalStorage('chixus_user_name_v7', profileObj.fullName);
+                          safeSetLocalStorage('chixus_user_location_v7', profileObj.location);
+                          safeSetLocalStorage('chixus_headline_v7', profileObj.headline);
+                          localStorage.removeItem('chixus_explicit_logout_v1');
+                        } catch {}
 
-                      profileObj.secretId = finalAssignedId;
-                      (profileObj as any).password = trimmedPass;
-
-                      setCurrentUserProfile(profileObj);
-                      setGeneratedSecretID(finalAssignedId);
-                      await hydrateOrResetAccountVault(finalAssignedId, profileObj, true);
-
-                      try {
-                        const existingAccountsRaw = localStorage.getItem('chixus_registered_users');
-                        const accountsList = existingAccountsRaw ? JSON.parse(existingAccountsRaw) : [];
-                        accountsList.push({
-                          ...profileObj,
-                          frontendId: newGeneratedId,
-                          backendId: finalAssignedId,
-                          password: trimmedPass
-                        });
-                        safeSetLocalStorage('chixus_registered_users', JSON.stringify(accountsList));
-
-                        safeSaveUserProfileToStorage(profileObj);
-                        safeSetLocalStorage('chixus_generated_secret_id', finalAssignedId);
-                        safeSetLocalStorage('chixus_user_name_v7', profileObj.fullName);
-                        safeSetLocalStorage('chixus_user_location_v7', profileObj.location);
-                        safeSetLocalStorage('chixus_headline_v7', profileObj.headline);
-                        localStorage.removeItem('chixus_explicit_logout_v1');
-                      } catch {}
-
-                      setIsRegisteringLoading(false);
-                      setTermsAgreedChecked(false);
-                      setShowTermsAgreementModal(true);
-                      sound.playSuccess();
-                      triggerToast(`✨ Operator ID Generated (${finalAssignedId}). Please accept CHIXUS Terms & Privacy to enter.`);
+                        setTermsAgreedChecked(false);
+                        setShowTermsAgreementModal(true);
+                        sound.playSuccess();
+                        triggerToast(`✨ Operator ID Generated (${finalAssignedId}). Please accept CHIXUS Terms & Privacy to enter.`);
+                      } catch (err: unknown) {
+                        sound.playError();
+                        const message =
+                          err instanceof ApiRequestError
+                            ? err.message
+                            : err instanceof Error
+                            ? err.message
+                            : 'Registration failed on CHIXUS backend.';
+                        setToastFeedback(`❌ ${message}`);
+                      } finally {
+                        setIsRegisteringLoading(false);
+                      }
                     }}
                     style={{
                       flex: 1,
@@ -12744,6 +13289,133 @@ export function App() {
           )}
 
         </div>
+
+        {/* CHIXUS Official Policy Documents Modal */}
+        {activePolicyModal && (
+          <div
+            id="chixus-policy-document-modal-backdrop"
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              backgroundColor: 'rgba(3, 6, 12, 0.92)',
+              zIndex: 999999,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '16px',
+              boxSizing: 'border-box'
+            }}
+            onClick={() => setActivePolicyModal(null)}
+          >
+            <div
+              style={{
+                width: '100%',
+                maxWidth: '620px',
+                maxHeight: '88vh',
+                backgroundColor: '#0c101c',
+                border: '1px solid #38bdf8',
+                borderRadius: '16px',
+                display: 'flex',
+                flexDirection: 'column',
+                overflow: 'hidden',
+                boxShadow: '0 25px 60px rgba(0, 0, 0, 0.95), 0 0 35px rgba(56, 189, 248, 0.25)'
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Header */}
+              <div
+                style={{
+                  padding: '16px 20px',
+                  borderBottom: '1px solid #1e2638',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  background: 'linear-gradient(90deg, rgba(56, 189, 248, 0.12) 0%, transparent 100%)'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Shield style={{ width: '18px', height: '18px', color: '#38bdf8' }} />
+                  <div>
+                    <div style={{ fontSize: '13px', fontWeight: 900, fontFamily: 'monospace', color: '#ffffff' }}>
+                      {ALL_POLICIES[activePolicyModal]?.title || 'Policy Document'}
+                    </div>
+                    <div style={{ fontSize: '10px', color: '#94a3b8', fontFamily: 'monospace' }}>
+                      Version: {ALL_POLICIES[activePolicyModal]?.version} &bull; {ALL_POLICIES[activePolicyModal]?.lastUpdated}
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActivePolicyModal(null)}
+                  style={{
+                    width: '32px',
+                    height: '32px',
+                    borderRadius: '50%',
+                    background: 'rgba(255, 255, 255, 0.08)',
+                    border: '1px solid rgba(255, 255, 255, 0.2)',
+                    color: '#ffffff',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer'
+                  }}
+                >
+                  <X style={{ width: '16px', height: '16px' }} />
+                </button>
+              </div>
+
+              {/* Scrollable Content */}
+              <div
+                style={{
+                  padding: '20px',
+                  overflowY: 'auto',
+                  fontSize: '12px',
+                  lineHeight: 1.7,
+                  color: '#cbd5e1',
+                  fontFamily: 'monospace',
+                  whiteSpace: 'pre-wrap'
+                }}
+              >
+                {ALL_POLICIES[activePolicyModal]?.content}
+              </div>
+
+              {/* Footer */}
+              <div
+                style={{
+                  padding: '12px 20px',
+                  borderTop: '1px solid #1e2638',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  background: '#090d16'
+                }}
+              >
+                <span style={{ fontSize: '10px', color: '#64748b', fontFamily: 'monospace' }}>
+                  CHIXUS Sovereign Compliance Framework
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setActivePolicyModal(null)}
+                  className="tactical-brushed-silver-btn"
+                  style={{
+                    padding: '8px 18px',
+                    borderRadius: '8px',
+                    fontSize: '11px',
+                    fontFamily: 'monospace',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Close Document
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+
 
         {/* Phase E: FORGOTTEN ID AND PASSWORD MODAL OVERLAY */}
         {showRecoveryModal && (
@@ -13128,130 +13800,41 @@ export function App() {
                     setRecoveredMasterNodeId(null);
                     setRecoveredPinCode(null);
 
-                    const phonesAreEquivalent = (phoneA: string, phoneB: string): boolean => {
-                      const dA = String(phoneA || '').replace(/\D/g, '');
-                      const dB = String(phoneB || '').replace(/\D/g, '');
-                      if (dA.length < 7 || dB.length < 7) return false;
-                      if (dA === dB) return true;
-                      return dA.slice(-9) === dB.slice(-9);
-                    };
-
                     try {
-                      let recoveredIdResult = '';
-                      let recoveredCodeResult = '';
-                      let recoveredNameResult = '';
-
-                      // 1. Primary Authoritative Check: Query Backend SQLite Database and strictly verify BOTH phone number AND email match
-                      try {
-                        const safeRecEmail = e.toLowerCase().replace(/'/g, "''");
-                        const sqlQuery = `SELECT id, username, full_name, phone, email, password_hash FROM users WHERE LOWER(TRIM(email))=LOWER('${safeRecEmail}') OR REPLACE(REPLACE(phone, ' ', ''), '+', '') LIKE '%${inputPhoneTail}' LIMIT 20`;
-                        const sqlRes = await fetch(`${API_BASE_URL}/api/admin/sql?key=chixus_admin_2026&query=${encodeURIComponent(sqlQuery)}`);
-                        const sqlData = await sqlRes.json().catch(() => null);
-                        if (sqlRes.ok && sqlData && sqlData.status === 'success' && Array.isArray(sqlData.data)) {
-                          const matchedRow = sqlData.data.find((r: any) => {
-                            const rowEmail = String(r.email || '').trim().toLowerCase();
-                            const rowPhone = String(r.phone || '').trim();
-                            // Both phone number and email MUST match on the backend!
-                            return rowEmail === e.toLowerCase() && phonesAreEquivalent(p, rowPhone);
-                          });
-                          if (matchedRow && matchedRow.id) {
-                            recoveredIdResult = matchedRow.id;
-                            recoveredNameResult = matchedRow.full_name || matchedRow.id;
-                            const rawPass = String(matchedRow.password_hash || '').trim();
-                            if (/^\d{4}$/.test(rawPass)) {
-                              recoveredCodeResult = rawPass;
-                            } else {
-                              // Derive specific 4-digit code from the user's phone number if legacy hash was stored
-                              recoveredCodeResult = inputDigits.slice(-4).padStart(4, '0');
-                              const syncSql = `UPDATE users SET password_hash='${recoveredCodeResult}' WHERE id='${matchedRow.id}'`;
-                              fetch(`${API_BASE_URL}/api/admin/sql?key=chixus_admin_2026&query=${encodeURIComponent(syncSql)}`).catch(() => {});
-                            }
-                          }
+                      const response = await fetch(API_ENDPOINTS.AUTH_RECOVER_ID(), {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                          phone: p,
+                          phone_number: p,
+                          email: e.toLowerCase()
+                        })
+                      });
+                      const data = await response.json().catch(() => null);
+                      if (response.ok && data && (data.status === 'success' || data.found || data.recovered_node_id || data.chixus_id)) {
+                        const recId = data.recovered_node_id || data.chixus_id || data.node_id || data.operator_id || null;
+                        if (recId) setRecoveredMasterNodeId(recId);
+                        if (data.recovered_password || data.password || data.code) {
+                          setRecoveredPinCode(String(data.recovered_password || data.password || data.code));
                         }
-                      } catch {}
-
-                      // 2. Also call Backend /api/auth/recover-id endpoint (so user's backend email sender is triggered)
-                      try {
-                        const response = await fetch(`${API_BASE_URL}/api/auth/recover-id`, {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({
-                            phone: p,
-                            email: e
-                          })
-                        });
-                        const data = await response.json().catch(() => ({}));
-                        if (response.ok && data && (data.recovered_node_id || data.node_id || data.operator_id)) {
-                          if (!recoveredIdResult) {
-                            recoveredIdResult = data.recovered_node_id || data.node_id || data.operator_id;
-                          }
-                          if (!recoveredCodeResult && (data.recovered_password || data.password || data.code)) {
-                            recoveredCodeResult = String(data.recovered_password || data.password || data.code);
-                          }
-                        }
-                      } catch {}
-
-                      // 3. Fallback: Check local registered accounts only if both phone and email match strictly
-                      if (!recoveredIdResult) {
-                        const candidateAccounts: any[] = [];
-                        try {
-                          const regRaw = localStorage.getItem('chixus_registered_users');
-                          if (regRaw) {
-                            const parsedReg = JSON.parse(regRaw);
-                            if (Array.isArray(parsedReg)) candidateAccounts.push(...parsedReg);
-                          }
-                          const profRaw = localStorage.getItem('chixus_current_user_profile');
-                          if (profRaw) candidateAccounts.push(JSON.parse(profRaw));
-                        } catch {}
-                        if (currentUserProfile) candidateAccounts.push(currentUserProfile);
-
-                        for (const acc of candidateAccounts) {
-                          if (!acc) continue;
-                          const accPhone = String(acc.phoneNumber || acc.phone || '').trim();
-                          const accEmail = String(acc.email || '').trim().toLowerCase();
-                          const accId = acc.secretId || acc.frontendId || acc.backendId || '';
-                          if (accId && accEmail === e.toLowerCase() && phonesAreEquivalent(p, accPhone)) {
-                            recoveredIdResult = accId;
-                            recoveredCodeResult = String(acc.password || inputDigits.slice(-4).padStart(4, '0'));
-                            recoveredNameResult = acc.fullName || accId;
-                            break;
-                          }
-                        }
-                      }
-
-                      if (recoveredIdResult) {
-                        const finalCode = recoveredCodeResult || inputDigits.slice(-4).padStart(4, '0');
-                        // Trigger email dispatch endpoint
-                        fetch('/api/send-recovery-email', {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({
-                            email: e,
-                            phone: p,
-                            operatorId: recoveredIdResult,
-                            code: finalCode,
-                            fullName: recoveredNameResult
-                          })
-                        }).catch(() => {});
-
                         sound.playSuccess();
-                        setRecoveredMasterNodeId(recoveredIdResult);
-                        setRecoveredPinCode(finalCode);
                         setRecoverySuccessMsg(
-                          'Your code and ID have been sent to your email. Please type in your code and ID in the Operator Gateway to have access to your account.'
+                          data.message ||
+                            'If matching records exist, your permanent CHIXUS ID and recovery instructions have been dispatched to your registered email.'
                         );
-                        triggerToast('✨ Your code and ID have been sent to your email.');
+                        triggerToast('✨ Recovery instructions dispatched to your email.');
                       } else {
                         sound.playError();
                         setRecoveryErrorMsg(
-                          'This email is not registered, or the phone number and email do not match our system records.'
+                          data?.error ||
+                            data?.detail ||
+                            data?.message ||
+                            'This email is not registered, or the phone number and email do not match our backend records.'
                         );
                       }
                     } catch {
                       sound.playError();
-                      setRecoveryErrorMsg(
-                        'This email is not registered, or the phone number and email do not match our system records.'
-                      );
+                      setRecoveryErrorMsg('Unable to reach CHIXUS backend recovery service. Please try again.');
                     } finally {
                       setRecoveryLoading(false);
                     }
@@ -13285,6 +13868,8 @@ export function App() {
           </div>
         )}
         {renderTermsAgreementModal()}
+        {renderLogoutConfirmModal()}
+        {renderAccountVerificationModal()}
       </div>
     );
   }
@@ -13309,6 +13894,8 @@ export function App() {
       }}
     >
       {renderTermsAgreementModal()}
+      {renderLogoutConfirmModal()}
+      {renderAccountVerificationModal()}
       {/* 480px Mobile Viewport Container */}
       <div
         id="chixus-mobile-viewport"
@@ -14343,7 +14930,7 @@ export function App() {
                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#38bdf8', fontWeight: 800 }}>
                           <img
                             src={CHIXUS_AI_BOT_AVATAR}
-                            alt="CHIXUS AI"
+                            alt="Qorvex"
                             style={{
                               width: '18px',
                               height: '18px',
@@ -14353,18 +14940,7 @@ export function App() {
                               flexShrink: 0
                             }}
                           />
-                          <span>CHIXUS AI POST EDUCATOR</span>
-                          <img
-                            src={aiVerifyBadgeSrc}
-                            alt="Verified"
-                            style={{
-                              width: '16px',
-                              height: '16px',
-                              objectFit: 'contain',
-                              display: 'inline-block',
-                              flexShrink: 0
-                            }}
-                          />
+                          <span>QORVEX POST EDUCATOR</span>
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                           {postEducations[String(post.id)] && (
@@ -14468,7 +15044,7 @@ export function App() {
 
                       {loadingPostEducation[String(post.id)] ? (
                         <div style={{ color: '#38bdf8', fontSize: '11px', padding: '6px 0' }}>
-                          CHIXUS AI is reading this post and preparing your educational breakdown...
+                          Qorvex is reading this post and preparing your educational breakdown...
                         </div>
                       ) : (
                         <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.55, color: '#f1f5f9' }}>
@@ -16423,6 +16999,142 @@ export function App() {
                     )}
                   </div>
                 </div>
+
+                {/* ======================================================== */}
+                {/* CIRCUIT DEFECT IDENTIFIED — DEDICATED VOICE EXPLAINER TEXT DISPLAY */}
+                {/* ======================================================== */}
+                <div
+                  id="circuit-defect-identified-voice-card"
+                  style={{
+                    padding: '16px',
+                    borderRadius: '12px',
+                    background: darkModeTheme
+                      ? 'linear-gradient(145deg, rgba(15, 23, 42, 0.95) 0%, rgba(9, 13, 22, 0.98) 100%)'
+                      : '#ffffff',
+                    border: (scanResult || coreDiagnostic)
+                      ? '2px solid #38bdf8'
+                      : '1px solid #334155',
+                    boxShadow: (scanResult || coreDiagnostic)
+                      ? '0 8px 24px rgba(56, 189, 248, 0.2)'
+                      : 'none',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '12px'
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <AlertTriangle style={{ width: '18px', height: '18px', color: (scanResult || coreDiagnostic) ? '#38bdf8' : '#94a3b8' }} />
+                      <div>
+                        <div style={{ fontSize: '13px', fontWeight: 900, fontFamily: 'monospace', color: darkModeTheme ? '#ffffff' : '#0f172a', letterSpacing: '0.6px' }}>
+                          CIRCUIT DEFECT IDENTIFIED
+                        </div>
+                        <div style={{ fontSize: '10px', fontFamily: 'monospace', color: '#94a3b8' }}>
+                          Voice Explainer Audio &amp; Text Synchronization Feed
+                        </div>
+                      </div>
+                    </div>
+                    <span
+                      style={{
+                        padding: '3px 8px',
+                        borderRadius: '6px',
+                        fontSize: '9.5px',
+                        fontFamily: 'monospace',
+                        fontWeight: 900,
+                        background: (scanResult || coreDiagnostic) ? 'rgba(56, 189, 248, 0.15)' : 'rgba(148, 163, 184, 0.15)',
+                        border: (scanResult || coreDiagnostic) ? '1px solid #38bdf8' : '1px solid #64748b',
+                        color: (scanResult || coreDiagnostic) ? '#38bdf8' : '#94a3b8'
+                      }}
+                    >
+                      {(scanResult || coreDiagnostic) ? 'DEFECT VERIFIED' : 'AWAITING INSPECTION'}
+                    </span>
+                  </div>
+
+                  {(scanResult || coreDiagnostic) ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      {/* Identified Defect Box */}
+                      <div style={{ padding: '10px 12px', borderRadius: '8px', background: darkModeTheme ? '#090d16' : '#f1f5f9', border: '1px solid rgba(56, 189, 248, 0.3)' }}>
+                        <div style={{ fontSize: '9px', fontFamily: 'monospace', color: '#94a3b8', textTransform: 'uppercase', marginBottom: '3px' }}>
+                          Identified Defect &amp; Hardware Target
+                        </div>
+                        <div style={{ fontSize: '12px', fontWeight: 700, fontFamily: 'monospace', color: '#38bdf8' }}>
+                          {scanResult?.detectedFaults || coreDiagnostic?.vision_analysis?.detected_anomaly || coreDiagnostic?.vision_analysis?.fault_tag || 'Pin 4 solder joint bridging anomaly'}
+                        </div>
+                      </div>
+
+                      {/* Anomaly Explanation Box */}
+                      <div style={{ padding: '10px 12px', borderRadius: '8px', background: darkModeTheme ? '#090d16' : '#f1f5f9', border: darkModeTheme ? '1px solid #1e2638' : '1px solid #e2e8f0' }}>
+                        <div style={{ fontSize: '9px', fontFamily: 'monospace', color: '#94a3b8', textTransform: 'uppercase', marginBottom: '3px' }}>
+                          Diagnostic Anomaly Explanation
+                        </div>
+                        <div style={{ fontSize: '11px', fontFamily: 'monospace', color: darkModeTheme ? '#cbd5e1' : '#334155', lineHeight: 1.5 }}>
+                          {scanResult?.details || coreDiagnostic?.circuit_reasoning?.knowledge_base_reference || 'Micro-void air pocket identified with excessive solder causing thermal bridging across Pin 4 and Pin 5.'}
+                        </div>
+                      </div>
+
+                      {/* Recommended Repair Steps Box */}
+                      <div style={{ padding: '10px 12px', borderRadius: '8px', background: 'rgba(16, 185, 129, 0.08)', border: '1px solid rgba(16, 185, 129, 0.3)' }}>
+                        <div style={{ fontSize: '9px', fontFamily: 'monospace', color: '#34d399', textTransform: 'uppercase', marginBottom: '3px' }}>
+                          Actionable Repair &amp; Remediation Steps
+                        </div>
+                        <div style={{ fontSize: '11px', fontFamily: 'monospace', color: darkModeTheme ? '#a7f3d0' : '#065f46', lineHeight: 1.5 }}>
+                          {scanResult?.remediationSteps || (coreDiagnostic?.circuit_reasoning?.repair_steps ? coreDiagnostic.circuit_reasoning.repair_steps.join(', ') : 'Apply RMA flux along the bridge, set soldering iron to 245 degrees Celsius, draw bridge away using copper braid, and inspect for clean clearance.')}
+                        </div>
+                      </div>
+
+                      {/* Safety & Confidence Meters */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px' }}>
+                        <div style={{ padding: '8px 10px', borderRadius: '6px', background: darkModeTheme ? '#090d16' : '#f8fafc', border: darkModeTheme ? '1px solid #1e2638' : '1px solid #e2e8f0' }}>
+                          <div style={{ fontSize: '8.5px', fontFamily: 'monospace', color: '#94a3b8' }}>VERIFIED CONFIDENCE</div>
+                          <div style={{ fontSize: '13px', fontWeight: 900, fontFamily: 'monospace', color: '#38bdf8' }}>
+                            {scanResult?.confidence || (coreDiagnostic?.vision_analysis?.vision_confidence_score ? `${(coreDiagnostic.vision_analysis.vision_confidence_score * 100).toFixed(1)}%` : '99.4%')}
+                          </div>
+                        </div>
+
+                        <div style={{ padding: '8px 10px', borderRadius: '6px', background: darkModeTheme ? '#090d16' : '#f8fafc', border: darkModeTheme ? '1px solid #1e2638' : '1px solid #e2e8f0' }}>
+                          <div style={{ fontSize: '8.5px', fontFamily: 'monospace', color: '#94a3b8' }}>ZERO-ENERGY STATE</div>
+                          <div style={{ fontSize: '13px', fontWeight: 900, fontFamily: 'monospace', color: '#10b981' }}>
+                            MANDATORY (LDL)
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Interactive Trigger to Read Aloud */}
+                      <button
+                        type="button"
+                        onClick={handlePlayTribeVoice}
+                        style={{
+                          width: '100%',
+                          padding: '10px 14px',
+                          borderRadius: '8px',
+                          background: 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
+                          border: '1px solid #38bdf8',
+                          color: '#ffffff',
+                          fontSize: '11px',
+                          fontFamily: 'monospace',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '6px'
+                        }}
+                      >
+                        <Volume2 style={{ width: '14px', height: '14px' }} />
+                        <span>{isSpeakingVoice ? 'Speaking Defect & Repair Instructions... (Tap to Replay)' : '🔊 Read Defect & Repair Instructions Aloud'}</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      <div style={{ fontSize: '11px', color: '#94a3b8', fontFamily: 'monospace', lineHeight: 1.5 }}>
+                        No snapshot or inspection has been submitted yet. Snap a picture with your live camera sensor or upload an image above, then tap <strong>Run Verification</strong>.
+                      </div>
+                      <div style={{ fontSize: '10.5px', color: '#38bdf8', fontFamily: 'monospace' }}>
+                        ℹ️ When you tap Play Voice Explainer now, the voice will welcome you and guide you to snap a picture. After inspection completes, it reads the identified defect, explanation, and repair instructions.
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           )}
@@ -16922,7 +17634,13 @@ export function App() {
                           {scanLogs.map((log, idx) => {
                             const FOUR_DAYS_MS = 4 * 24 * 60 * 60 * 1000;
                             const ageMs = Date.now() - (log.createdAt || Date.now());
-                            const isLocked = ageMs < FOUR_DAYS_MS;
+                            const remainingMs = Math.max(0, FOUR_DAYS_MS - ageMs);
+                            const isLocked = remainingMs > 0;
+                            const remDays = Math.floor(remainingMs / (24 * 60 * 60 * 1000));
+                            const remHours = Math.floor((remainingMs % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+                            const countdownLabel = isLocked
+                              ? remDays > 0 ? `${remDays}d ${remHours}h left` : `${remHours}h left`
+                              : 'Eligible for Deletion';
                             const inspectionIndex = log.totalInspections || (scanLogs.length - idx);
 
                             return (
@@ -16959,13 +17677,14 @@ export function App() {
                                   </div>
                                 </td>
 
-                                {/* 2. Exact Date and Time Stamp */}
+                                {/* 2. Exact Date and Time Stamp + Protection Countdown */}
                                 <td style={{ padding: '8px 10px', verticalAlign: 'middle', whiteSpace: 'nowrap' }}>
                                   <div style={{ color: '#f1f5f9', fontWeight: 'bold', fontSize: '11px' }}>
                                     {log.timestamp}
                                   </div>
-                                  <div style={{ color: '#64748b', fontSize: '9px' }}>
-                                    {isLocked ? 'Protected in Ledger' : 'Retention Complete'}
+                                  <div style={{ color: isLocked ? '#f59e0b' : '#10b981', fontSize: '9px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '3px', marginTop: '2px' }}>
+                                    {isLocked && <Lock style={{ width: '9px', height: '9px' }} />}
+                                    <span>{isLocked ? `Protected — ${countdownLabel}` : 'Retention Complete'}</span>
                                   </div>
                                 </td>
 
@@ -17003,7 +17722,7 @@ export function App() {
                                     onClick={() => {
                                       if (isLocked) {
                                         sound.playClick();
-                                        triggerToast("⚠️ Security Hold: Industrial diagnostic scans cannot be altered or removed from the ledger within 4 days of capture.");
+                                        triggerToast(`⚠️ Security Hold: Diagnostic media is protected from manual deletion for 4 complete days from creation time. Available in ${remDays} days and ${remHours} hours.`);
                                         return;
                                       }
                                       handleDeleteScanLog(log);
@@ -17023,18 +17742,18 @@ export function App() {
                                       fontWeight: 'bold',
                                       cursor: isLocked ? 'not-allowed' : 'pointer',
                                       transition: 'all 0.15s ease',
-                                      opacity: isLocked ? 0.75 : 1
+                                      opacity: isLocked ? 0.8 : 1
                                     }}
                                     title={
                                       isLocked
-                                        ? '4-Day Anti-Tamper Security Lock Active: Click to verify hold policy'
-                                        : 'Purge scan from ledger (eligible after 4-day retention)'
+                                        ? `Protected: Deletion available in ${remDays} days and ${remHours} hours`
+                                        : 'Purge scan media (eligible after 4-day retention cycle)'
                                     }
                                   >
                                     {isLocked ? (
                                       <>
                                         <Lock style={{ width: '11px', height: '11px' }} />
-                                        <span>Locked</span>
+                                        <span>Protected ({countdownLabel})</span>
                                       </>
                                     ) : (
                                       <>
@@ -17129,10 +17848,10 @@ export function App() {
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
                       <div>
                         <div style={{ fontSize: '14px', fontWeight: 900, fontFamily: 'monospace', color: '#ffffff' }}>
-                          Operator Messages &amp; CHIXUS AI Bot
+                          Operator Messages &amp; Qorvex Bot
                         </div>
                         <div style={{ fontSize: '10px', color: '#38bdf8', fontFamily: 'monospace', marginTop: '2px' }}>
-                          {contacts.length} Active Channels • Ask CHIXUS AI anything about CHIXUS
+                          {contacts.length} Active Channels • Ask Qorvex anything about CHIXUS
                         </div>
                       </div>
                       <button
@@ -17144,8 +17863,8 @@ export function App() {
                             return [
                               {
                                 id: CHIXUS_AI_BOT_ID,
-                                name: 'CHIXUS AI',
-                                role: 'Verified Intelligent Assistant • 24/7 Instant Answers & Diagnostics',
+                                name: 'Qorvex',
+                                role: 'Intelligent Assistant • 24/7 Instant Answers & Diagnostics',
                                 status: 'Online',
                                 avatar: CHIXUS_AI_BOT_AVATAR
                               },
@@ -17171,7 +17890,7 @@ export function App() {
                         }}
                       >
                         <Bot style={{ width: '13px', height: '13px' }} />
-                        <span>Chat with CHIXUS AI</span>
+                        <span>Chat with Qorvex</span>
                       </button>
                     </div>
 
@@ -17371,7 +18090,7 @@ export function App() {
                             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, minWidth: 0 }}>
                               <div style={{ position: 'relative', flexShrink: 0 }}>
                                 <img
-                                  src={c.id === CHIXUS_AI_BOT_ID || c.name === 'CHIXUS AI' ? CHIXUS_AI_BOT_AVATAR : (c.avatar || CHIXUS_AI_BOT_AVATAR)}
+                                  src={c.id === CHIXUS_AI_BOT_ID || c.name === 'Qorvex' || c.name === 'Qordex' || c.name === 'CHIXUS AI' ? CHIXUS_AI_BOT_AVATAR : (c.avatar || CHIXUS_AI_BOT_AVATAR)}
                                   alt={c.name}
                                   onClick={(e: any) => {
                                     e.stopPropagation();
@@ -17421,20 +18140,6 @@ export function App() {
                                   >
                                     {c.name}
                                   </span>
-                                  {(c.id === CHIXUS_AI_BOT_ID || c.name === 'CHIXUS AI') && (
-                                    <img
-                                      src={aiVerifyBadgeSrc}
-                                      alt="Verified"
-                                      title="Verified CHIXUS AI Assistant"
-                                      style={{
-                                        width: '17px',
-                                        height: '17px',
-                                        objectFit: 'contain',
-                                        flexShrink: 0,
-                                        display: 'inline-block'
-                                      }}
-                                    />
-                                  )}
                                   <span
                                     style={{
                                       fontSize: '8px',
@@ -17584,7 +18289,7 @@ export function App() {
                           >
                             <div style={{ position: 'relative' }}>
                               <img
-                                src={currentContact.id === CHIXUS_AI_BOT_ID || currentContact.name === 'CHIXUS AI' ? CHIXUS_AI_BOT_AVATAR : (currentContact.avatar || CHIXUS_AI_BOT_AVATAR)}
+                                src={currentContact.id === CHIXUS_AI_BOT_ID || currentContact.name === 'Qorvex' || currentContact.name === 'Qordex' || currentContact.name === 'CHIXUS AI' ? CHIXUS_AI_BOT_AVATAR : (currentContact.avatar || CHIXUS_AI_BOT_AVATAR)}
                                 alt={currentContact.name}
                                 style={{
                                   width: '32px',
@@ -17624,20 +18329,6 @@ export function App() {
                                 }}
                               >
                                 <span>{currentContact.name}</span>
-                                {(currentContact.id === CHIXUS_AI_BOT_ID || currentContact.name === 'CHIXUS AI') && (
-                                  <img
-                                    src={aiVerifyBadgeSrc}
-                                    alt="Verified"
-                                    title="Verified CHIXUS AI Assistant"
-                                    style={{
-                                      width: '17px',
-                                      height: '17px',
-                                      objectFit: 'contain',
-                                      flexShrink: 0,
-                                      display: 'inline-block'
-                                    }}
-                                  />
-                                )}
                                 {currentContact.isBlocked && (
                                   <span style={{ fontSize: '9px', color: '#f87171', background: 'rgba(239, 68, 68, 0.15)', padding: '1px 5px', borderRadius: '4px' }}>
                                     Blocked
@@ -17767,7 +18458,7 @@ export function App() {
                     >
                     {(() => {
                       const activePeer = contacts.find((c) => c.id === activeContactId) || contacts[0];
-                      const isAi = activePeer?.id === CHIXUS_AI_BOT_ID || activePeer?.name === 'CHIXUS AI';
+                      const isAi = activePeer?.id === CHIXUS_AI_BOT_ID || activePeer?.name === 'Qorvex' || activePeer?.name === 'Qordex' || activePeer?.name === 'CHIXUS AI';
                       const isPeerOnline = isAi || activePeer?.status?.toLowerCase() === 'online';
                       const peerAvatar = isAi
                         ? CHIXUS_AI_BOT_AVATAR
@@ -17825,14 +18516,6 @@ export function App() {
                               <span style={{ fontSize: '14px', fontWeight: 800, color: '#ffffff', fontFamily: 'monospace' }}>
                                 {activePeer?.name || 'Mesh Operator'}
                               </span>
-                              {isAi && (
-                                <img
-                                  src={aiVerifyBadgeSrc}
-                                  alt="Verified"
-                                  title="Verified CHIXUS AI Assistant"
-                                  style={{ width: '16px', height: '16px', objectFit: 'contain' }}
-                                />
-                              )}
                             </div>
 
                             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '4px' }}>
@@ -17891,7 +18574,7 @@ export function App() {
                             const isHoldingThisMsg = holdingMessageId === msg.id;
                             const msgAvatar = isMe
                               ? avatarUrl
-                              : activePeer?.id === CHIXUS_AI_BOT_ID || activePeer?.name === 'CHIXUS AI'
+                              : activePeer?.id === CHIXUS_AI_BOT_ID || activePeer?.name === 'Qorvex' || activePeer?.name === 'Qordex' || activePeer?.name === 'CHIXUS AI'
                               ? CHIXUS_AI_BOT_AVATAR
                               : activePeer?.avatar ||
                                 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=400';
@@ -18084,7 +18767,7 @@ export function App() {
                                           localStorage.getItem('chixus_generated_secret_id') ||
                                           '';
                                         setIsChixusAiTyping(true);
-                                        triggerToast(`📖 CHIXUS AI is reading inside ${fileAtt.name}...`);
+                                        triggerToast(`📖 Qorvex is reading inside ${fileAtt.name}...`);
                                         const aiReading = await generateSmartChixusAiReply(
                                           `Please read everything that is inside this file (${fileAtt.name}), show the actual text/contents inside it, and explain it clearly.`,
                                           userName,
@@ -18123,7 +18806,7 @@ export function App() {
                                         cursor: 'pointer',
                                         flexShrink: 0
                                       }}
-                                      title="Have CHIXUS AI read what is inside this file"
+                                      title="Have Qorvex read what is inside this file"
                                     >
                                       📖 Read File
                                     </button>
@@ -18213,6 +18896,8 @@ export function App() {
                                       const currentPeer = contacts.find((c) => c.id === activeContactId);
                                       const isTargetOnline =
                                         activeContactId === CHIXUS_AI_BOT_ID ||
+                                        currentPeer?.name === 'Qorvex' ||
+                                        currentPeer?.name === 'Qordex' ||
                                         currentPeer?.name === 'CHIXUS AI' ||
                                         isUserTrulyOnline(currentPeer);
 
@@ -18274,7 +18959,7 @@ export function App() {
                           fontFamily: 'monospace'
                         }}
                       >
-                        CHIXUS AI is thinking...
+                        Qorvex is thinking...
                       </div>
                     )}
                     </div>
@@ -19219,7 +19904,7 @@ export function App() {
                         setNodeSearchInput(e.target.value);
                         if (nodeSearchError) setNodeSearchError(null);
                       }}
-                      placeholder="Query verified operators by Node ID (e.g. CHI-1342-NG)..."
+                      placeholder="Query verified operators by CHIXUS ID, phone number, or email..."
                       style={{
                         width: '100%',
                         padding: '11px 12px 11px 36px',
@@ -19878,6 +20563,202 @@ export function App() {
                 >
                   <span>Advanced Settings ↗</span>
                 </button>
+              </div>
+
+              {/* 0. RENDER / LIVE BACKEND CONNECTION CONFIGURATION CARD */}
+              <div
+                id="settings-tab-backend-connection-card"
+                style={{
+                  background: darkModeTheme ? '#161820' : '#ffffff',
+                  border: darkModeTheme ? '1px solid #232634' : '1px solid #cbd5e1',
+                  borderRadius: '16px',
+                  padding: '18px 20px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '14px',
+                  boxShadow: '0 4px 20px rgba(0,0,0,0.1)'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+                    <div
+                      style={{
+                        width: '44px',
+                        height: '44px',
+                        borderRadius: '12px',
+                        background: 'rgba(56, 189, 248, 0.15)',
+                        border: '1.5px solid rgba(56, 189, 248, 0.4)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        color: '#38bdf8',
+                        flexShrink: 0
+                      }}
+                    >
+                      <Radio style={{ width: '22px', height: '22px' }} />
+                    </div>
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ fontSize: '14px', fontWeight: 900, fontFamily: 'monospace', color: darkModeTheme ? '#ffffff' : '#0f172a' }}>
+                          Backend Server Endpoint
+                        </span>
+                        <span
+                          style={{
+                            fontSize: '9.5px',
+                            fontFamily: 'monospace',
+                            fontWeight: 800,
+                            padding: '2px 7px',
+                            borderRadius: '4px',
+                            background:
+                              backendTestStatus.status === 'connected'
+                                ? 'rgba(16, 185, 129, 0.2)'
+                                : backendTestStatus.status === 'error'
+                                ? 'rgba(239, 68, 68, 0.2)'
+                                : backendTestStatus.status === 'testing'
+                                ? 'rgba(245, 158, 11, 0.2)'
+                                : 'rgba(56, 189, 248, 0.15)',
+                            color:
+                              backendTestStatus.status === 'connected'
+                                ? '#10b981'
+                                : backendTestStatus.status === 'error'
+                                ? '#f87171'
+                                : backendTestStatus.status === 'testing'
+                                ? '#fbbf24'
+                                : '#38bdf8',
+                            border: '1px solid currentColor'
+                          }}
+                        >
+                          {backendTestStatus.status === 'connected'
+                            ? 'Connected'
+                            : backendTestStatus.status === 'error'
+                            ? 'Offline / Error'
+                            : backendTestStatus.status === 'testing'
+                            ? 'Testing...'
+                            : (getBackendBaseUrl() ? 'Configured' : 'Same-Origin')}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '3px', lineHeight: 1.4 }}>
+                        Connect to your deployed Render service (e.g. <code>https://your-app.onrender.com</code>).
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <button
+                      type="button"
+                      onClick={() => testBackendConnection(customBackendInput)}
+                      style={{
+                        padding: '6px 12px',
+                        borderRadius: '6px',
+                        background: 'rgba(56, 189, 248, 0.12)',
+                        border: '1px solid rgba(56, 189, 248, 0.4)',
+                        color: '#38bdf8',
+                        fontSize: '11px',
+                        fontFamily: 'monospace',
+                        fontWeight: 'bold',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      Ping /health
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label style={{ fontSize: '10px', fontFamily: 'monospace', color: '#94a3b8' }}>
+                    Backend Base URL (HTTP / HTTPS):
+                  </label>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    <input
+                      type="text"
+                      value={customBackendInput}
+                      onChange={(e) => setCustomBackendInput(e.target.value)}
+                      placeholder="e.g. https://your-backend.onrender.com"
+                      className="tactical-inset-input"
+                      style={{
+                        flex: 1,
+                        minWidth: '220px',
+                        padding: '8px 10px',
+                        borderRadius: '6px',
+                        fontSize: '11.5px',
+                        fontFamily: 'monospace'
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleUpdateApiBaseUrl(customBackendInput);
+                        testBackendConnection(customBackendInput);
+                      }}
+                      className="tactical-emerald-capsule"
+                      style={{
+                        padding: '8px 14px',
+                        fontSize: '11px',
+                        fontFamily: 'monospace',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      Save & Connect
+                    </button>
+                    {customBackendInput && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCustomBackendInput('');
+                          handleUpdateApiBaseUrl('');
+                          testBackendConnection('');
+                        }}
+                        style={{
+                          padding: '8px 10px',
+                          borderRadius: '6px',
+                          background: 'rgba(100, 116, 139, 0.15)',
+                          border: '1px solid #475569',
+                          color: '#94a3b8',
+                          fontSize: '11px',
+                          fontFamily: 'monospace',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Reset
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {backendTestStatus.message && (
+                  <div
+                    style={{
+                      padding: '6px 10px',
+                      borderRadius: '6px',
+                      fontSize: '10.5px',
+                      fontFamily: 'monospace',
+                      background:
+                        backendTestStatus.status === 'connected'
+                          ? 'rgba(16, 185, 129, 0.1)'
+                          : backendTestStatus.status === 'error'
+                          ? 'rgba(239, 68, 68, 0.1)'
+                          : 'rgba(56, 189, 248, 0.1)',
+                      color:
+                        backendTestStatus.status === 'connected'
+                          ? '#34d399'
+                          : backendTestStatus.status === 'error'
+                          ? '#f87171'
+                          : '#38bdf8',
+                      border:
+                        backendTestStatus.status === 'connected'
+                          ? '1px solid rgba(16, 185, 129, 0.3)'
+                          : backendTestStatus.status === 'error'
+                          ? '1px solid rgba(239, 68, 68, 0.3)'
+                          : '1px solid rgba(56, 189, 248, 0.3)'
+                    }}
+                  >
+                    {backendTestStatus.message}
+                  </div>
+                )}
+
+                <div style={{ fontSize: '10px', fontFamily: 'monospace', color: '#64748b' }}>
+                  WebSocket Stream URL: <span style={{ color: '#38bdf8' }}>{getWebSocketUrl()}</span>
+                </div>
               </div>
 
               {/* 1. PRIMARY FEATURE CARD: SOUND FEEDBACK TOGGLE */}
@@ -21016,15 +21897,7 @@ export function App() {
                   id="dossier-drawer-logout-btn"
                   onClick={() => {
                     sound.playClick();
-                    saveCurrentAccountVault();
-                    try {
-                      localStorage.setItem('chixus_explicit_logout_v1', 'true');
-                      localStorage.setItem('chixus_onboard_stage_v1', 'login');
-                    } catch {}
-                    setIsDossierDrawerOpen(false);
-                    setIsSideDrawerOpen(false);
-                    triggerToast('🔒 Operator session logged out. Node locked.');
-                    setOnboardStage('login');
+                    setShowLogoutConfirmModal(true);
                   }}
                   style={{
                     display: 'flex',
@@ -21193,14 +22066,7 @@ export function App() {
                   id="admin-drawer-logout-btn"
                   onClick={() => {
                     sound.playClick();
-                    saveCurrentAccountVault();
-                    try {
-                      localStorage.setItem('chixus_explicit_logout_v1', 'true');
-                      localStorage.setItem('chixus_onboard_stage_v1', 'login');
-                    } catch {}
-                    setIsNetworkAdminDrawerOpen(false);
-                    triggerToast('🔒 Operator session logged out. Node locked.');
-                    setOnboardStage('login');
+                    setShowLogoutConfirmModal(true);
                   }}
                   style={{
                     display: 'flex',
@@ -23617,8 +24483,7 @@ export function App() {
                 position: 'fixed',
                 inset: 0,
                 zIndex: 9999,
-                backgroundColor: 'rgba(0, 0, 0, 0.78)',
-                backdropFilter: 'blur(4px)',
+                backgroundColor: 'rgba(3, 6, 12, 0.88)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -23844,20 +24709,6 @@ export function App() {
                       >
                         {peer.name}
                       </h2>
-                      {peer.name === 'CHIXUS AI' && (
-                        <img
-                          src={aiVerifyBadgeSrc}
-                          alt="Verified"
-                          title="Verified CHIXUS AI Assistant"
-                          style={{
-                            width: '19px',
-                            height: '19px',
-                            objectFit: 'contain',
-                            flexShrink: 0,
-                            display: 'inline-block'
-                          }}
-                        />
-                      )}
                     </div>
                     {peer.badge ? (
                       <div style={{ fontSize: '10px', color: '#38bdf8', fontFamily: 'monospace', fontWeight: 'bold', marginTop: '2px' }}>
@@ -24517,20 +25368,6 @@ export function App() {
                     >
                       {selectedUserNode.name}
                     </h2>
-                    {selectedUserNode.name === 'CHIXUS AI' && (
-                      <img
-                        src={aiVerifyBadgeSrc}
-                        alt="Verified"
-                        title="Verified CHIXUS AI Assistant"
-                        style={{
-                          width: '19px',
-                          height: '19px',
-                          objectFit: 'contain',
-                          flexShrink: 0,
-                          display: 'inline-block'
-                        }}
-                      />
-                    )}
                   </div>
 
                   {/* Professional Role Badge */}
@@ -24880,8 +25717,7 @@ export function App() {
               position: 'fixed',
               inset: 0,
               zIndex: 10000,
-              backgroundColor: 'rgba(0, 0, 0, 0.85)',
-              backdropFilter: 'blur(8px)',
+              backgroundColor: 'rgba(3, 6, 12, 0.90)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -25192,20 +26028,6 @@ export function App() {
                       >
                         {selectedPeerProfile.name}
                       </h2>
-                      {(selectedPeerProfile.name === 'CHIXUS AI' || selectedPeerProfile.operator_id === 'CHI-AI01-BOT') && (
-                        <img
-                          src={aiVerifyBadgeSrc}
-                          alt="Verified"
-                          title="Verified CHIXUS AI Assistant"
-                          style={{
-                            width: '20px',
-                            height: '20px',
-                            objectFit: 'contain',
-                            flexShrink: 0,
-                            display: 'inline-block'
-                          }}
-                        />
-                      )}
                     </div>
 
                     {selectedPeerProfile.badge && (
@@ -26683,58 +27505,89 @@ export function App() {
           userHeadline={userHeadline}
           userLocation={userLocation}
           operatorId={getMyActiveNodeId() || currentUserProfile?.secretId || generatedSecretID || ''}
+          internalId={currentUserProfile?.internalId || ''}
           avatarUrl={avatarUrl}
           userPhone={currentUserProfile?.phoneNumber || regPhoneNumber || ''}
           userEmail={currentUserProfile?.email || regEmail || ''}
+          pendingPhone={currentUserProfile?.pendingPhone ?? null}
+          pendingEmail={currentUserProfile?.pendingEmail ?? null}
           userCountry={selectedRegion?.country || 'Nigeria'}
-          onUpdatePhone={(newPhone: string) => {
-            setRegPhoneNumber(newPhone);
-            if (currentUserProfile) {
-              setCurrentUserProfile({ ...currentUserProfile, phoneNumber: newPhone });
-              try {
-                localStorage.setItem(
-                  'chixus_current_user_profile',
-                  JSON.stringify({ ...currentUserProfile, phoneNumber: newPhone })
-                );
-              } catch {}
-            }
-            triggerToast(`📱 Phone number updated to ${newPhone}`);
-          }}
-          onUpdateEmail={(newEmail: string) => {
-            setRegEmail(newEmail);
-            if (currentUserProfile) {
-              setCurrentUserProfile({ ...currentUserProfile, email: newEmail });
-              try {
-                localStorage.setItem(
-                  'chixus_current_user_profile',
-                  JSON.stringify({ ...currentUserProfile, email: newEmail })
-                );
-              } catch {}
-            }
-            triggerToast(`✉️ Email updated to ${newEmail}`);
-          }}
-          onUpdatePassword={async (newPass: string) => {
+          preferences={userPreferences}
+          isLoadingPreferences={isLoadingPreferences}
+          preferencesSyncError={preferencesSyncError}
+          onLoadPreferences={loadAccountAndPreferencesFromBackend}
+          onUpdatePreferencePatch={handleUpdatePreferencePatch}
+          onRefreshAccount={loadAccountAndPreferencesFromBackend}
+          onRequestPhoneChange={async (newPhone: string) => {
             try {
+              const res = await requestPhoneNumberChange(newPhone);
+              const pendingVal = res.pending_phone || newPhone;
+              if (currentUserProfile) {
+                const updated = { ...currentUserProfile, pendingPhone: pendingVal };
+                setCurrentUserProfile(updated);
+                safeSaveUserProfileToStorage(updated);
+              }
+              sound.playSuccess();
+              return {
+                ok: true,
+                message: res.message || PHONE_CHANGE_CONFIRMATION_MESSAGE,
+                pendingPhone: pendingVal
+              };
+            } catch (err: unknown) {
+              sound.playError();
+              return {
+                ok: false,
+                error: err instanceof Error ? err.message : 'Unable to request phone number change.'
+              };
+            }
+          }}
+          onRequestEmailChange={async (newEmail: string, currentPasswordVal: string) => {
+            try {
+              const res = await requestEmailAddressChange(newEmail, currentPasswordVal);
+              const pendingVal = res.pending_email || newEmail.trim().toLowerCase();
+              if (currentUserProfile) {
+                const updated = { ...currentUserProfile, pendingEmail: pendingVal };
+                setCurrentUserProfile(updated);
+                safeSaveUserProfileToStorage(updated);
+              }
+              sound.playSuccess();
+              return {
+                ok: true,
+                message:
+                  res.message ||
+                  'Verification link sent to your new email address and security notice dispatched to your current email.',
+                pendingEmail: pendingVal
+              };
+            } catch (err: unknown) {
+              sound.playError();
+              return {
+                ok: false,
+                error: err instanceof Error ? err.message : 'Unable to request email address change.'
+              };
+            }
+          }}
+          onUpdatePassword={async (newPass: string, currentPass?: string) => {
+            if (!currentPass || !currentPass.trim()) {
+              return { ok: false, error: 'Current password is required to verify this change.' };
+            }
+            try {
+              const res = await changeAccountPassword(currentPass, newPass);
               setRegPasswordInput(newPass);
               setLoginPasswordInput(newPass);
-              const storedUsers = localStorage.getItem('chixus_registered_users');
-              if (storedUsers) {
-                const list = JSON.parse(storedUsers);
-                if (Array.isArray(list)) {
-                  const myOpId = getMyActiveNodeId() || currentUserProfile?.secretId || '';
-                  const updated = list.map((u: any) => {
-                    if (u?.secretId === myOpId || u?.fullName === userName) {
-                      return { ...u, password: newPass, pin: newPass };
-                    }
-                    return u;
-                  });
-                  localStorage.setItem('chixus_registered_users', JSON.stringify(updated));
-                }
-              }
-              triggerToast('🔒 Password updated successfully');
-              return true;
-            } catch {
-              return false;
+              sound.playSuccess();
+              triggerToast('🔒 Password updated and security confirmation dispatched.');
+              return {
+                ok: true,
+                message:
+                  res.message ||
+                  'Password updated successfully. A CHIXUS security notification has been sent to your registered email.'
+              };
+            } catch (err: unknown) {
+              sound.playError();
+              return {
+                ok: false,
+                error: err instanceof Error ? err.message : 'Unable to update password.'
+              };
             }
           }}
           totalChatMessagesCount={chatMessages.length}
@@ -26746,6 +27599,7 @@ export function App() {
           }}
           soundFeedbackEnabled={soundFeedbackEnabled}
           onToggleSoundFeedback={handleToggleSoundFeedback}
+          onLogout={() => setShowLogoutConfirmModal(true)}
         />
 
         <HelpCenterDrawerSplitView
@@ -26758,9 +27612,9 @@ export function App() {
           userPhone={currentUserProfile?.phoneNumber || regPhoneNumber || ''}
           userLocation={userLocation}
           userHeadline={userHeadline}
-          isIdPublic={typeof window !== 'undefined' ? localStorage.getItem('chixus_id_public_visibility_v1') !== 'false' : true}
-          allowAiPermissions={typeof window !== 'undefined' ? localStorage.getItem('chixus_ai_access_permission_v1') !== 'denied' : true}
-          selectedLanguage={typeof window !== 'undefined' ? localStorage.getItem('chixus_selected_language_clean_v1') || 'English' : 'English'}
+          isIdPublic={userPreferences.isIdPublic}
+          allowAiPermissions={userPreferences.aiAccessLevel !== 'none'}
+          selectedLanguage={userPreferences.language}
           inspectionsCount={userInspectionsConducted}
           faultsCount={userFaultsIsolated}
           scanAccuracy={userAiScanAccuracy}

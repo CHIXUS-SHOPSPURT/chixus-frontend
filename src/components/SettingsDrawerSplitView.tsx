@@ -27,8 +27,16 @@ import {
   FileText,
   AlertCircle,
   Volume2,
-  VolumeX
+  VolumeX,
+  LogOut,
+  RefreshCw,
+  Loader2
 } from 'lucide-react';
+import {
+  DEFAULT_USER_PREFERENCES,
+  PHONE_CHANGE_CONFIRMATION_MESSAGE
+} from '../services/accountService';
+import type { AiAccessLevel, UserPreferencesPayload } from '../types';
 
 export interface SettingsDrawerSplitViewProps {
   isOpen: boolean;
@@ -39,17 +47,40 @@ export interface SettingsDrawerSplitViewProps {
   userHeadline?: string;
   userLocation?: string;
   operatorId: string;
+  internalId?: string;
   avatarUrl: string;
   userPhone?: string;
   userEmail?: string;
   userCountry?: string;
+  pendingPhone?: string | null;
+  pendingEmail?: string | null;
+  preferences?: UserPreferencesPayload;
+  isLoadingPreferences?: boolean;
+  preferencesSyncError?: string | null;
+  onLoadPreferences?: () => Promise<void> | void;
+  onUpdatePreferencePatch?: (
+    nextPrefs: UserPreferencesPayload,
+    changedKey: string
+  ) => Promise<{ ok: boolean; error?: string }>;
+  onRefreshAccount?: () => Promise<void> | void;
+  onRequestPhoneChange?: (
+    newPhone: string
+  ) => Promise<{ ok: boolean; message?: string; error?: string; pendingPhone?: string }>;
+  onRequestEmailChange?: (
+    newEmail: string,
+    currentPassword: string
+  ) => Promise<{ ok: boolean; message?: string; error?: string; pendingEmail?: string }>;
   onUpdatePhone?: (newPhone: string) => void;
   onUpdateEmail?: (newEmail: string) => void;
-  onUpdatePassword?: (newPassword: string) => boolean | Promise<boolean>;
+  onUpdatePassword?: (
+    newPassword: string,
+    currentPassword?: string
+  ) => boolean | { ok: boolean; message?: string; error?: string } | Promise<boolean | { ok: boolean; message?: string; error?: string }>;
   totalChatMessagesCount?: number;
   onClearAllMessagesPrompt?: () => void;
   soundFeedbackEnabled?: boolean;
-  onToggleSoundFeedback?: (enabled?: boolean) => void;
+  onToggleSoundFeedback?: (enabled?: boolean) => void | Promise<boolean | void>;
+  onLogout?: () => void;
   [key: string]: any;
 }
 
@@ -61,13 +92,7 @@ export type RootSettingsTabId =
   | 'accessibility'
   | 'resources';
 
-export type AiAccessLevel =
-  | 'feed'
-  | 'inspect'
-  | 'profile'
-  | 'none'
-  | 'everything'
-  | 'no_message_allow_other';
+export type { AiAccessLevel };
 
 export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = ({
   isOpen,
@@ -78,46 +103,72 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
   userHeadline,
   userLocation,
   operatorId,
+  internalId = '',
   avatarUrl,
   userPhone = '',
   userEmail = '',
   userCountry = 'Nigeria',
+  pendingPhone = null,
+  pendingEmail = null,
+  preferences: preferencesProp,
+  isLoadingPreferences = false,
+  preferencesSyncError = null,
+  onLoadPreferences,
+  onUpdatePreferencePatch,
+  onRefreshAccount,
+  onRequestPhoneChange,
+  onRequestEmailChange,
   onUpdatePhone,
   onUpdateEmail,
   onUpdatePassword,
   totalChatMessagesCount = 0,
   onClearAllMessagesPrompt,
   soundFeedbackEnabled: soundFeedbackEnabledProp,
-  onToggleSoundFeedback
+  onToggleSoundFeedback,
+  onLogout
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<RootSettingsTabId>('account');
   const [isMobileSubPageOpen, setIsMobileSubPageOpen] = useState(false);
 
+  const [savingPrefKey, setSavingPrefKey] = useState<string | null>(null);
+  const [prefBanner, setPrefBanner] = useState<{ text: string; isError: boolean } | null>(null);
+
   const [soundFeedbackActive, setSoundFeedbackActive] = useState<boolean>(() => {
+    if (preferencesProp) return preferencesProp.soundFeedback;
     if (soundFeedbackEnabledProp !== undefined) return soundFeedbackEnabledProp;
-    try {
-      const saved = localStorage.getItem('chixus_sound_feedback_enabled_v1');
-      return saved !== 'false';
-    } catch {
-      return true;
-    }
+    return DEFAULT_USER_PREFERENCES.soundFeedback;
   });
 
   useEffect(() => {
-    if (soundFeedbackEnabledProp !== undefined) {
+    if (preferencesProp) {
+      setSoundFeedbackActive(preferencesProp.soundFeedback);
+    } else if (soundFeedbackEnabledProp !== undefined) {
       setSoundFeedbackActive(soundFeedbackEnabledProp);
     }
-  }, [soundFeedbackEnabledProp]);
+  }, [preferencesProp, soundFeedbackEnabledProp]);
 
-  const handleToggleSoundFeedback = () => {
-    const next = !soundFeedbackActive;
+  const handleToggleSoundFeedback = async () => {
+    if (savingPrefKey === 'soundFeedback') return;
+    const prevVal = soundFeedbackActive;
+    const next = !prevVal;
     setSoundFeedbackActive(next);
-    try {
-      localStorage.setItem('chixus_sound_feedback_enabled_v1', next ? 'true' : 'false');
-    } catch {}
+    if (onUpdatePreferencePatch) {
+      const result = await persistPreferenceChange(
+        {
+          ...currentPreferencesSnapshot(),
+          soundFeedback: next
+        },
+        'soundFeedback',
+        () => setSoundFeedbackActive(prevVal)
+      );
+      if (result.ok && onToggleSoundFeedback) {
+        await onToggleSoundFeedback(next);
+      }
+      return;
+    }
     if (onToggleSoundFeedback) {
-      onToggleSoundFeedback(next);
+      await onToggleSoundFeedback(next);
     }
   };
 
@@ -142,6 +193,10 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
     if (isOpen) {
       setIsMobileSubPageOpen(false);
       setSearchQuery('');
+      setPrefBanner(null);
+      if (onLoadPreferences) {
+        onLoadPreferences();
+      }
     }
   }, [isOpen]);
 
@@ -150,16 +205,28 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
   // ==========================================
   const [phoneState, setPhoneState] = useState(userPhone);
   const [isEditingPhone, setIsEditingPhone] = useState(false);
+  const [isPhoneSubmitting, setIsPhoneSubmitting] = useState(false);
+  const [phoneStatusMsg, setPhoneStatusMsg] = useState<{ text: string; isError: boolean } | null>(null);
+  const [localPendingPhone, setLocalPendingPhone] = useState<string | null>(pendingPhone || null);
+
   const [emailState, setEmailState] = useState(userEmail);
+  const [emailCurrentPassword, setEmailCurrentPassword] = useState('');
   const [isEditingEmail, setIsEditingEmail] = useState(false);
+  const [isEmailSubmitting, setIsEmailSubmitting] = useState(false);
+  const [emailStatusMsg, setEmailStatusMsg] = useState<{ text: string; isError: boolean } | null>(null);
+  const [localPendingEmail, setLocalPendingEmail] = useState<string | null>(pendingEmail || null);
+
+  const [isRefreshingAccount, setIsRefreshingAccount] = useState(false);
   const [countryState, setCountryState] = useState(userCountry);
 
-  // Sync initial props
+  // Sync initial & refreshed props cleanly
   useEffect(() => {
-    if (userPhone) setPhoneState(userPhone);
-    if (userEmail) setEmailState(userEmail);
+    if (!isEditingPhone) setPhoneState(userPhone);
+    if (!isEditingEmail) setEmailState(userEmail);
     if (userCountry) setCountryState(userCountry);
-  }, [userPhone, userEmail, userCountry]);
+    setLocalPendingPhone(pendingPhone || null);
+    setLocalPendingEmail(pendingEmail || null);
+  }, [userPhone, userEmail, userCountry, pendingPhone, pendingEmail, isEditingPhone, isEditingEmail]);
 
   // Password fields
   const [currentPassword, setCurrentPassword] = useState('');
@@ -168,128 +235,41 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
   const [showCurrentPass, setShowCurrentPass] = useState(false);
   const [showNewPass, setShowNewPass] = useState(false);
   const [showConfirmPass, setShowConfirmPass] = useState(false);
+  const [isPasswordSubmitting, setIsPasswordSubmitting] = useState(false);
   const [passwordStatusMsg, setPasswordStatusMsg] = useState<{ text: string; isError: boolean } | null>(null);
 
   // ==========================================
   // 2. SECURITY & ACCESS: Public / Private ID Card
   // ==========================================
-  const [isIdPublic, setIsIdPublic] = useState<boolean>(() => {
-    try {
-      const saved = localStorage.getItem('chixus_id_public_visibility_v1');
-      return saved !== null ? saved === 'true' : true;
-    } catch {
-      return true;
-    }
-  });
-
-  const handleToggleIdPublic = () => {
-    const next = !isIdPublic;
-    setIsIdPublic(next);
-    try {
-      localStorage.setItem('chixus_id_public_visibility_v1', String(next));
-    } catch {}
-  };
+  const [isIdPublic, setIsIdPublic] = useState<boolean>(
+    preferencesProp?.isIdPublic ?? DEFAULT_USER_PREFERENCES.isIdPublic
+  );
 
   // ==========================================
   // 3. PRIVACY & SAFETY: CHIXUS AI Access Control Group
   // ==========================================
-  const [aiAccessLevel, setAiAccessLevel] = useState<AiAccessLevel>(() => {
-    try {
-      const saved = localStorage.getItem('chixus_ai_access_permission_v1');
-      if (
-        saved === 'feed' ||
-        saved === 'inspect' ||
-        saved === 'profile' ||
-        saved === 'none' ||
-        saved === 'everything' ||
-        saved === 'no_message_allow_other'
-      ) {
-        return saved;
-      }
-    } catch {}
-    return 'everything';
-  });
-
+  const [aiAccessLevel, setAiAccessLevel] = useState<AiAccessLevel>(
+    preferencesProp?.aiAccessLevel ?? DEFAULT_USER_PREFERENCES.aiAccessLevel
+  );
   const [aiSaveToast, setAiSaveToast] = useState(false);
-
-  const handleSelectAiAccess = (level: AiAccessLevel) => {
-    setAiAccessLevel(level);
-    try {
-      localStorage.setItem('chixus_ai_access_permission_v1', level);
-    } catch {}
-    setAiSaveToast(true);
-    setTimeout(() => setAiSaveToast(false), 2500);
-  };
 
   // ==========================================
   // 4. NOTIFICATIONS: Email Alerts Group & In-App Group
   // ==========================================
-  const [emailAlerts, setEmailAlerts] = useState({
-    weeklyReport: true,
-    verifiedOnly: false,
-    newUpdate: true,
-    tips: true
-  });
+  const [emailAlerts, setEmailAlerts] = useState(
+    preferencesProp?.emailAlerts ?? DEFAULT_USER_PREFERENCES.emailAlerts
+  );
 
-  const [inAppAlerts, setInAppAlerts] = useState({
-    popupToast: true,
-    appUpdate: true,
-    directMessage: true,
-    contactJoin: true
-  });
-
-  // Load notifications settings from localStorage
-  useEffect(() => {
-    try {
-      const savedEmail = localStorage.getItem('chixus_notif_email_alerts_v1');
-      if (savedEmail) setEmailAlerts(JSON.parse(savedEmail));
-      const savedInApp = localStorage.getItem('chixus_notif_inapp_alerts_v1');
-      if (savedInApp) setInAppAlerts(JSON.parse(savedInApp));
-    } catch {}
-  }, []);
-
-  const toggleEmailAlert = (key: keyof typeof emailAlerts) => {
-    const next = { ...emailAlerts, [key]: !emailAlerts[key] };
-    setEmailAlerts(next);
-    try {
-      localStorage.setItem('chixus_notif_email_alerts_v1', JSON.stringify(next));
-    } catch {}
-  };
-
-  const toggleInAppAlert = (key: keyof typeof inAppAlerts) => {
-    const next = { ...inAppAlerts, [key]: !inAppAlerts[key] };
-    setInAppAlerts(next);
-    try {
-      localStorage.setItem('chixus_notif_inapp_alerts_v1', JSON.stringify(next));
-    } catch {}
-  };
+  const [inAppAlerts, setInAppAlerts] = useState(
+    preferencesProp?.inAppAlerts ?? DEFAULT_USER_PREFERENCES.inAppAlerts
+  );
 
   // ==========================================
   // 5. ACCESSIBILITY, DISPLAY & LANGUAGES
   // ==========================================
-  const [themeSelection, setThemeSelection] = useState<'dark' | 'white' | 'system'>(() => {
-    try {
-      const saved = localStorage.getItem('chixus_theme_preference_v1');
-      if (saved === 'dark' || saved === 'white' || saved === 'system') return saved;
-    } catch {}
-    return darkModeTheme ? 'dark' : 'white';
-  });
-
-  const handleSelectTheme = (mode: 'dark' | 'white' | 'system') => {
-    setThemeSelection(mode);
-    try {
-      localStorage.setItem('chixus_theme_preference_v1', mode);
-    } catch {}
-    if (mode === 'dark') {
-      onToggleTheme(true);
-    } else if (mode === 'white') {
-      onToggleTheme(false);
-    } else {
-      // System default check
-      const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-      onToggleTheme(prefersDark);
-    }
-  };
+  const [themeSelection, setThemeSelection] = useState<'dark' | 'white' | 'system'>(
+    preferencesProp?.theme ?? (darkModeTheme ? 'dark' : 'white')
+  );
 
   // Clean language names without ISO country codes (e.g. English, French, Italian)
   const SUPPORTED_LANGUAGES = [
@@ -316,22 +296,266 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
     'Pidgin'
   ];
 
-  const [selectedLanguage, setSelectedLanguage] = useState<string>(() => {
-    try {
-      return localStorage.getItem('chixus_selected_language_clean_v1') || 'English';
-    } catch {
-      return 'English';
-    }
+  const [selectedLanguage, setSelectedLanguage] = useState<string>(
+    preferencesProp?.language ?? DEFAULT_USER_PREFERENCES.language
+  );
+
+  // Sync every setting directly from authoritative backend preferences prop
+  useEffect(() => {
+    if (!preferencesProp) return;
+    setEmailAlerts(preferencesProp.emailAlerts);
+    setInAppAlerts(preferencesProp.inAppAlerts);
+    setSoundFeedbackActive(preferencesProp.soundFeedback);
+    setIsIdPublic(preferencesProp.isIdPublic);
+    setAiAccessLevel(preferencesProp.aiAccessLevel);
+    setThemeSelection(preferencesProp.theme);
+    setSelectedLanguage(preferencesProp.language);
+  }, [preferencesProp]);
+
+  const currentPreferencesSnapshot = (): UserPreferencesPayload => ({
+    emailAlerts,
+    inAppAlerts,
+    soundFeedback: soundFeedbackActive,
+    isIdPublic,
+    aiAccessLevel,
+    theme: themeSelection,
+    language: selectedLanguage
   });
 
-  const handleSelectLanguage = (lang: string) => {
-    setSelectedLanguage(lang);
+  const persistPreferenceChange = async (
+    nextPrefs: UserPreferencesPayload,
+    changedKey: string,
+    rollback: () => void
+  ): Promise<{ ok: boolean; error?: string }> => {
+    setSavingPrefKey(changedKey);
+    setPrefBanner(null);
+
+    if (!onUpdatePreferencePatch) {
+      setSavingPrefKey(null);
+      rollback();
+      const errMsg = 'Backend preferences service is not connected.';
+      setPrefBanner({ text: errMsg, isError: true });
+      return { ok: false, error: errMsg };
+    }
+
     try {
-      localStorage.setItem('chixus_selected_language_clean_v1', lang);
-    } catch {}
+      const result = await onUpdatePreferencePatch(nextPrefs, changedKey);
+      if (result.ok) {
+        setPrefBanner({ text: '✓ Preference saved to your CHIXUS account.', isError: false });
+        return { ok: true };
+      }
+      rollback();
+      const errMsg = result.error || 'Failed to save preference to backend. Reverted to last saved value.';
+      setPrefBanner({ text: errMsg, isError: true });
+      return { ok: false, error: errMsg };
+    } catch (err: any) {
+      rollback();
+      const errMsg = err?.message || 'Failed to save preference to backend. Reverted to last saved value.';
+      setPrefBanner({ text: errMsg, isError: true });
+      return { ok: false, error: errMsg };
+    } finally {
+      setSavingPrefKey((curr) => (curr === changedKey ? null : curr));
+    }
   };
 
-  // Password submission handler
+  const handleToggleIdPublic = async () => {
+    if (savingPrefKey === 'isIdPublic') return;
+    const prevVal = isIdPublic;
+    const next = !prevVal;
+    setIsIdPublic(next);
+    await persistPreferenceChange(
+      { ...currentPreferencesSnapshot(), isIdPublic: next },
+      'isIdPublic',
+      () => setIsIdPublic(prevVal)
+    );
+  };
+
+  const handleSelectAiAccess = async (level: AiAccessLevel) => {
+    if (savingPrefKey === 'aiAccessLevel' || level === aiAccessLevel) return;
+    const prevVal = aiAccessLevel;
+    setAiAccessLevel(level);
+    setAiSaveToast(false);
+    const res = await persistPreferenceChange(
+      { ...currentPreferencesSnapshot(), aiAccessLevel: level },
+      'aiAccessLevel',
+      () => setAiAccessLevel(prevVal)
+    );
+    if (res.ok) {
+      setAiSaveToast(true);
+      setTimeout(() => setAiSaveToast(false), 2500);
+    }
+  };
+
+  const toggleEmailAlert = async (key: keyof typeof emailAlerts) => {
+    const prefKey = `email.${key}`;
+    if (savingPrefKey === prefKey) return;
+    const prevAlerts = { ...emailAlerts };
+    const nextAlerts = { ...emailAlerts, [key]: !emailAlerts[key] };
+    setEmailAlerts(nextAlerts);
+    await persistPreferenceChange(
+      { ...currentPreferencesSnapshot(), emailAlerts: nextAlerts },
+      prefKey,
+      () => setEmailAlerts(prevAlerts)
+    );
+  };
+
+  const toggleInAppAlert = async (key: keyof typeof inAppAlerts) => {
+    const prefKey = `inApp.${key}`;
+    if (savingPrefKey === prefKey) return;
+    const prevAlerts = { ...inAppAlerts };
+    const nextAlerts = { ...inAppAlerts, [key]: !inAppAlerts[key] };
+    setInAppAlerts(nextAlerts);
+    await persistPreferenceChange(
+      { ...currentPreferencesSnapshot(), inAppAlerts: nextAlerts },
+      prefKey,
+      () => setInAppAlerts(prevAlerts)
+    );
+  };
+
+  const handleSelectTheme = async (mode: 'dark' | 'white' | 'system') => {
+    if (savingPrefKey === 'theme') return;
+    const prevTheme = themeSelection;
+    setThemeSelection(mode);
+    const applyVisualTheme = (m: 'dark' | 'white' | 'system') => {
+      if (m === 'dark') {
+        onToggleTheme(true);
+      } else if (m === 'white') {
+        onToggleTheme(false);
+      } else {
+        const prefersDark =
+          typeof window !== 'undefined' &&
+          window.matchMedia &&
+          window.matchMedia('(prefers-color-scheme: dark)').matches;
+        onToggleTheme(prefersDark);
+      }
+    };
+    applyVisualTheme(mode);
+    await persistPreferenceChange(
+      { ...currentPreferencesSnapshot(), theme: mode },
+      'theme',
+      () => {
+        setThemeSelection(prevTheme);
+        applyVisualTheme(prevTheme);
+      }
+    );
+  };
+
+  const handleSelectLanguage = async (lang: string) => {
+    if (savingPrefKey === 'language' || lang === selectedLanguage) return;
+    const prevLang = selectedLanguage;
+    setSelectedLanguage(lang);
+    await persistPreferenceChange(
+      { ...currentPreferencesSnapshot(), language: lang },
+      'language',
+      () => setSelectedLanguage(prevLang)
+    );
+  };
+
+  const handleRequestPhoneChangeSubmit = async () => {
+    const trimmed = phoneState.trim();
+    const digits = trimmed.replace(/\D/g, '');
+    setPhoneStatusMsg(null);
+
+    if (!trimmed || digits.length < 7 || digits.length > 16) {
+      setPhoneStatusMsg({ text: 'Please enter a valid phone number with country code (e.g. +234...).', isError: true });
+      return;
+    }
+    if (trimmed === (userPhone || '').trim()) {
+      setPhoneStatusMsg({ text: 'Please enter a different phone number from your current registered number.', isError: true });
+      return;
+    }
+
+    if (!onRequestPhoneChange) {
+      if (onUpdatePhone) {
+        onUpdatePhone(trimmed);
+        setIsEditingPhone(false);
+      }
+      return;
+    }
+
+    setIsPhoneSubmitting(true);
+    try {
+      const res = await onRequestPhoneChange(trimmed);
+      if (res.ok) {
+        setLocalPendingPhone(res.pendingPhone || trimmed);
+        setPhoneState(userPhone || '');
+        setIsEditingPhone(false);
+        setPhoneStatusMsg({
+          text: res.message || PHONE_CHANGE_CONFIRMATION_MESSAGE,
+          isError: false
+        });
+      } else {
+        setPhoneStatusMsg({
+          text: res.error || 'Unable to submit phone number change request.',
+          isError: true
+        });
+      }
+    } catch (err: any) {
+      setPhoneStatusMsg({
+        text: err?.message || 'Unable to submit phone number change request.',
+        isError: true
+      });
+    } finally {
+      setIsPhoneSubmitting(false);
+    }
+  };
+
+  const handleRequestEmailChangeSubmit = async () => {
+    const trimmed = emailState.trim().toLowerCase();
+    setEmailStatusMsg(null);
+
+    if (!trimmed || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+      setEmailStatusMsg({ text: 'Please enter a valid new email address.', isError: true });
+      return;
+    }
+    if (trimmed === (userEmail || '').trim().toLowerCase()) {
+      setEmailStatusMsg({ text: 'Please enter a different email address from your current registered email.', isError: true });
+      return;
+    }
+    if (!emailCurrentPassword.trim()) {
+      setEmailStatusMsg({ text: 'Please enter your current password to authorize this email address change.', isError: true });
+      return;
+    }
+
+    if (!onRequestEmailChange) {
+      if (onUpdateEmail) {
+        onUpdateEmail(trimmed);
+        setIsEditingEmail(false);
+      }
+      return;
+    }
+
+    setIsEmailSubmitting(true);
+    try {
+      const res = await onRequestEmailChange(trimmed, emailCurrentPassword.trim());
+      if (res.ok) {
+        setLocalPendingEmail(res.pendingEmail || trimmed);
+        setEmailState(userEmail || '');
+        setEmailCurrentPassword('');
+        setIsEditingEmail(false);
+        setEmailStatusMsg({
+          text:
+            res.message ||
+            `A security notice was sent to your current email and a verification link was sent to ${trimmed}. Your email will update only after you click the verification link.`,
+          isError: false
+        });
+      } else {
+        setEmailStatusMsg({
+          text: res.error || 'Unable to initiate email address change.',
+          isError: true
+        });
+      }
+    } catch (err: any) {
+      setEmailStatusMsg({
+        text: err?.message || 'Unable to initiate email address change.',
+        isError: true
+      });
+    } finally {
+      setIsEmailSubmitting(false);
+    }
+  };
+
+  // Password submission handler (strictly awaits backend confirmation)
   const handleUpdatePasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setPasswordStatusMsg(null);
@@ -344,40 +568,46 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
       setPasswordStatusMsg({ text: 'New password must be at least 4 digits.', isError: true });
       return;
     }
+    if (newPassword === currentPassword) {
+      setPasswordStatusMsg({ text: 'New password must be different from your current password.', isError: true });
+      return;
+    }
     if (newPassword !== confirmPassword) {
       setPasswordStatusMsg({ text: 'New password and confirm password do not match.', isError: true });
       return;
     }
 
+    if (!onUpdatePassword) {
+      setPasswordStatusMsg({ text: 'Password service unavailable.', isError: true });
+      return;
+    }
+
+    setIsPasswordSubmitting(true);
     try {
-      if (onUpdatePassword) {
-        const res = await onUpdatePassword(newPassword);
-        if (res === false) {
-          setPasswordStatusMsg({ text: 'Incorrect current password.', isError: true });
-          return;
-        }
-      } else {
-        // Fallback update to registered user vault
-        const storedUsers = localStorage.getItem('chixus_registered_users');
-        if (storedUsers) {
-          const list = JSON.parse(storedUsers);
-          if (Array.isArray(list)) {
-            const updated = list.map((u: any) => {
-              if (u?.secretId === operatorId || u?.fullName === userName) {
-                return { ...u, password: newPassword, pin: newPassword };
-              }
-              return u;
-            });
-            localStorage.setItem('chixus_registered_users', JSON.stringify(updated));
-          }
-        }
+      const res = await onUpdatePassword(newPassword, currentPassword);
+      if (res === false || (typeof res === 'object' && res !== null && !res.ok)) {
+        const errMsg =
+          typeof res === 'object' && res !== null && res.error
+            ? res.error
+            : 'Incorrect current password or backend rejected update.';
+        setPasswordStatusMsg({ text: errMsg, isError: true });
+        return;
       }
-      setPasswordStatusMsg({ text: '✅ Password updated successfully.', isError: false });
+      const successMsg =
+        typeof res === 'object' && res !== null && res.message
+          ? res.message
+          : '✅ Password updated successfully. Security confirmation sent to your registered email.';
+      setPasswordStatusMsg({ text: successMsg, isError: false });
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
     } catch (err: any) {
-      setPasswordStatusMsg({ text: 'Failed to update password. Please try again.', isError: true });
+      setPasswordStatusMsg({
+        text: err?.message || 'Failed to update password. Please verify your connection and try again.',
+        isError: true
+      });
+    } finally {
+      setIsPasswordSubmitting(false);
     }
   };
 
@@ -410,7 +640,7 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
       title: 'Privacy and safety',
       icon: Shield,
       subpageTitle: 'Privacy and Safety',
-      subpageDescription: 'Configure fine-grained CHIXUS AI permissions and control how the neural engine interacts with your feed, inspector, and messages.'
+      subpageDescription: 'Configure fine-grained Qorvex AI permissions and control how the neural engine interacts with your feed, inspector, and messages.'
     },
     {
       id: 'notifications',
@@ -726,6 +956,32 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                     {operatorId}
                   </div>
                 </div>
+                {onLogout && (
+                  <button
+                    type="button"
+                    id="settings-sidebar-logout-btn"
+                    onClick={onLogout}
+                    title="Lock Node / Logout"
+                    style={{
+                      background: 'rgba(239, 68, 68, 0.12)',
+                      border: '1px solid rgba(239, 68, 68, 0.35)',
+                      borderRadius: '8px',
+                      padding: '6px 8px',
+                      color: '#fca5a5',
+                      fontSize: '11px',
+                      fontFamily: 'monospace',
+                      fontWeight: 'bold',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      flexShrink: 0
+                    }}
+                  >
+                    <LogOut style={{ width: '13px', height: '13px', color: '#f87171' }} />
+                    <span>Logout</span>
+                  </button>
+                )}
               </div>
             </div>
           )}
@@ -776,12 +1032,44 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
 
               {/* Subpage Title & Description */}
               <div style={{ borderBottom: darkModeTheme ? '1px solid #222938' : '1px solid #e2e8f0', paddingBottom: '14px', marginBottom: '22px' }}>
-                <div style={{ fontSize: '17px', fontWeight: 900, fontFamily: 'monospace', color: darkModeTheme ? '#ffffff' : '#0f172a' }}>
-                  {activeItem.subpageTitle}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
+                  <div style={{ fontSize: '17px', fontWeight: 900, fontFamily: 'monospace', color: darkModeTheme ? '#ffffff' : '#0f172a' }}>
+                    {activeItem.subpageTitle}
+                  </div>
+                  {(isLoadingPreferences || savingPrefKey) && (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '10.5px', fontFamily: 'monospace', color: '#38bdf8', fontWeight: 700 }}>
+                      <Loader2 style={{ width: '13px', height: '13px', animation: 'spin 1s linear infinite' }} />
+                      <span>{savingPrefKey ? 'Saving to backend...' : 'Syncing settings...'}</span>
+                    </span>
+                  )}
                 </div>
                 <div style={{ fontSize: '11.5px', color: '#94a3b8', fontFamily: 'monospace', marginTop: '4px', lineHeight: 1.5 }}>
                   {activeItem.subpageDescription}
                 </div>
+                {(preferencesSyncError || prefBanner) && (
+                  <div
+                    style={{
+                      marginTop: '10px',
+                      padding: '9px 12px',
+                      borderRadius: '8px',
+                      fontSize: '11px',
+                      fontFamily: 'monospace',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      background: (preferencesSyncError || prefBanner?.isError) ? 'rgba(239, 68, 68, 0.14)' : 'rgba(16, 185, 129, 0.14)',
+                      border: (preferencesSyncError || prefBanner?.isError) ? '1px solid #ef4444' : '1px solid #10b981',
+                      color: (preferencesSyncError || prefBanner?.isError) ? '#f87171' : '#34d399'
+                    }}
+                  >
+                    {(preferencesSyncError || prefBanner?.isError) ? (
+                      <AlertCircle style={{ width: '14px', height: '14px', flexShrink: 0 }} />
+                    ) : (
+                      <CheckCircle2 style={{ width: '14px', height: '14px', flexShrink: 0 }} />
+                    )}
+                    <span>{preferencesSyncError || prefBanner?.text}</span>
+                  </div>
+                )}
               </div>
 
               {/* ============================================================ */}
@@ -798,18 +1086,76 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                       border: darkModeTheme ? '1px solid #252b3d' : '1px solid #e2e8f0'
                     }}
                   >
-                    <div style={{ fontSize: '12px', fontWeight: 900, fontFamily: 'monospace', color: '#38bdf8', marginBottom: '14px' }}>
-                      ACCOUNT CREDENTIALS
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', gap: '8px' }}>
+                      <div style={{ fontSize: '12px', fontWeight: 900, fontFamily: 'monospace', color: '#38bdf8' }}>
+                        ACCOUNT CREDENTIALS
+                      </div>
+                      {onRefreshAccount && (
+                        <button
+                          type="button"
+                          disabled={isRefreshingAccount}
+                          onClick={async () => {
+                            setIsRefreshingAccount(true);
+                            try {
+                              await onRefreshAccount();
+                            } finally {
+                              setIsRefreshingAccount(false);
+                            }
+                          }}
+                          style={{
+                            background: 'none',
+                            border: darkModeTheme ? '1px solid #2e374d' : '1px solid #cbd5e1',
+                            borderRadius: '6px',
+                            padding: '4px 8px',
+                            color: '#38bdf8',
+                            fontSize: '10px',
+                            fontFamily: 'monospace',
+                            fontWeight: 'bold',
+                            cursor: isRefreshingAccount ? 'wait' : 'pointer',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '5px'
+                          }}
+                        >
+                          <RefreshCw style={{ width: '11px', height: '11px' }} />
+                          <span>{isRefreshingAccount ? 'Refreshing...' : 'Refresh Status'}</span>
+                        </button>
+                      )}
                     </div>
 
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                      {/* Phone Number Item with Inline Update */}
+                      {/* Permanent CHIXUS Account ID (Read-Only, Non-Phone Derived) */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', paddingBottom: '10px', borderBottom: darkModeTheme ? '1px solid #1c2230' : '1px solid #e2e8f0' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <span style={{ fontSize: '11px', color: '#94a3b8', fontFamily: 'monospace' }}>Permanent CHIXUS ID</span>
+                          <span style={{ fontSize: '9.5px', color: '#10b981', fontFamily: 'monospace', fontWeight: 800 }}>
+                            PERMANENT IDENTITY
+                          </span>
+                        </div>
+                        <div style={{ fontSize: '13.5px', fontWeight: 800, fontFamily: 'monospace', color: '#38bdf8' }}>
+                          {operatorId || 'Assigned on login'}
+                        </div>
+                        {internalId && internalId !== operatorId && (
+                          <div style={{ fontSize: '10px', color: '#64748b', fontFamily: 'monospace' }}>
+                            Internal Account UUID: {internalId}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Phone Number Item with Email-Verified Change Request */}
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                           <span style={{ fontSize: '11px', color: '#94a3b8', fontFamily: 'monospace' }}>Phone Number</span>
                           <button
                             type="button"
-                            onClick={() => setIsEditingPhone(!isEditingPhone)}
+                            disabled={isPhoneSubmitting}
+                            onClick={() => {
+                              setPhoneStatusMsg(null);
+                              if (isEditingPhone) {
+                                setPhoneState(userPhone || '');
+                              }
+                              setIsEditingPhone(!isEditingPhone);
+                            }}
                             style={{
                               background: 'none',
                               border: 'none',
@@ -824,59 +1170,97 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                           </button>
                         </div>
                         {isEditingPhone ? (
-                          <div style={{ display: 'flex', gap: '8px' }}>
-                            <input
-                              type="text"
-                              value={phoneState}
-                              onChange={(e) => setPhoneState(e.target.value)}
-                              placeholder="+234..."
-                              style={{
-                                flex: 1,
-                                padding: '8px 12px',
-                                borderRadius: '8px',
-                                background: darkModeTheme ? '#181d2a' : '#ffffff',
-                                border: '1px solid #38bdf8',
-                                color: darkModeTheme ? '#ffffff' : '#0f172a',
-                                fontSize: '12px',
-                                fontFamily: 'monospace',
-                                outline: 'none'
-                              }}
-                            />
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (onUpdatePhone) onUpdatePhone(phoneState);
-                                setIsEditingPhone(false);
-                              }}
-                              style={{
-                                padding: '8px 14px',
-                                borderRadius: '8px',
-                                background: '#0284c7',
-                                color: '#ffffff',
-                                border: 'none',
-                                fontSize: '11px',
-                                fontFamily: 'monospace',
-                                fontWeight: 'bold',
-                                cursor: 'pointer'
-                              }}
-                            >
-                              Save
-                            </button>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                              <input
+                                type="text"
+                                value={phoneState}
+                                onChange={(e) => setPhoneState(e.target.value)}
+                                placeholder="+234..."
+                                disabled={isPhoneSubmitting}
+                                style={{
+                                  flex: 1,
+                                  padding: '8px 12px',
+                                  borderRadius: '8px',
+                                  background: darkModeTheme ? '#181d2a' : '#ffffff',
+                                  border: '1px solid #38bdf8',
+                                  color: darkModeTheme ? '#ffffff' : '#0f172a',
+                                  fontSize: '12px',
+                                  fontFamily: 'monospace',
+                                  outline: 'none'
+                                }}
+                              />
+                              <button
+                                type="button"
+                                id="settings-save-phone-btn"
+                                disabled={isPhoneSubmitting}
+                                onClick={handleRequestPhoneChangeSubmit}
+                                style={{
+                                  padding: '8px 14px',
+                                  borderRadius: '8px',
+                                  background: isPhoneSubmitting ? '#475569' : '#0284c7',
+                                  color: '#ffffff',
+                                  border: 'none',
+                                  fontSize: '11px',
+                                  fontFamily: 'monospace',
+                                  fontWeight: 'bold',
+                                  cursor: isPhoneSubmitting ? 'wait' : 'pointer'
+                                }}
+                              >
+                                {isPhoneSubmitting ? 'Sending...' : 'Request Change'}
+                              </button>
+                            </div>
+                            <div style={{ fontSize: '10px', color: '#94a3b8', fontFamily: 'monospace' }}>
+                              A confirmation link will be sent to your registered email ({userEmail || 'on file'}). Your CHIXUS ID will not change.
+                            </div>
                           </div>
                         ) : (
-                          <div style={{ fontSize: '13px', fontWeight: 700, fontFamily: 'monospace' }}>
-                            {phoneState || 'Not registered'}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                            <div style={{ fontSize: '13px', fontWeight: 700, fontFamily: 'monospace' }}>
+                              {userPhone || phoneState || 'Not registered'}
+                            </div>
+                            {localPendingPhone && (
+                              <div style={{ fontSize: '10.5px', color: '#fbbf24', fontFamily: 'monospace' }}>
+                                Pending email confirmation: {localPendingPhone}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {phoneStatusMsg && (
+                          <div
+                            id="phone-change-status-banner"
+                            style={{
+                              marginTop: '4px',
+                              padding: '9px 11px',
+                              borderRadius: '8px',
+                              fontSize: '11px',
+                              fontFamily: 'monospace',
+                              lineHeight: 1.45,
+                              background: phoneStatusMsg.isError ? 'rgba(239, 68, 68, 0.14)' : 'rgba(56, 189, 248, 0.14)',
+                              color: phoneStatusMsg.isError ? '#f87171' : '#38bdf8',
+                              border: phoneStatusMsg.isError ? '1px solid #ef4444' : '1px solid #38bdf8'
+                            }}
+                          >
+                            {phoneStatusMsg.text}
                           </div>
                         )}
                       </div>
 
-                      {/* Email Address Item with Inline Update */}
+                      {/* Email Address Item with Authenticated Dual-Notification Change Flow */}
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', paddingTop: '10px', borderTop: darkModeTheme ? '1px solid #1c2230' : '1px solid #e2e8f0' }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                           <span style={{ fontSize: '11px', color: '#94a3b8', fontFamily: 'monospace' }}>Email Address</span>
                           <button
                             type="button"
-                            onClick={() => setIsEditingEmail(!isEditingEmail)}
+                            disabled={isEmailSubmitting}
+                            onClick={() => {
+                              setEmailStatusMsg(null);
+                              setEmailCurrentPassword('');
+                              if (isEditingEmail) {
+                                setEmailState(userEmail || '');
+                              }
+                              setIsEditingEmail(!isEditingEmail);
+                            }}
                             style={{
                               background: 'none',
                               border: 'none',
@@ -891,14 +1275,15 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                           </button>
                         </div>
                         {isEditingEmail ? (
-                          <div style={{ display: 'flex', gap: '8px' }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                             <input
                               type="email"
                               value={emailState}
                               onChange={(e) => setEmailState(e.target.value)}
-                              placeholder="user@example.com"
+                              placeholder="new-email@example.com"
+                              disabled={isEmailSubmitting}
                               style={{
-                                flex: 1,
+                                width: '100%',
                                 padding: '8px 12px',
                                 borderRadius: '8px',
                                 background: darkModeTheme ? '#181d2a' : '#ffffff',
@@ -906,33 +1291,81 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                                 color: darkModeTheme ? '#ffffff' : '#0f172a',
                                 fontSize: '12px',
                                 fontFamily: 'monospace',
-                                outline: 'none'
+                                outline: 'none',
+                                boxSizing: 'border-box'
                               }}
                             />
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (onUpdateEmail) onUpdateEmail(emailState);
-                                setIsEditingEmail(false);
-                              }}
-                              style={{
-                                padding: '8px 14px',
-                                borderRadius: '8px',
-                                background: '#0284c7',
-                                color: '#ffffff',
-                                border: 'none',
-                                fontSize: '11px',
-                                fontFamily: 'monospace',
-                                fontWeight: 'bold',
-                                cursor: 'pointer'
-                              }}
-                            >
-                              Save
-                            </button>
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                              <input
+                                type="password"
+                                value={emailCurrentPassword}
+                                onChange={(e) => setEmailCurrentPassword(e.target.value)}
+                                placeholder="Current password to authorize"
+                                disabled={isEmailSubmitting}
+                                style={{
+                                  flex: 1,
+                                  padding: '8px 12px',
+                                  borderRadius: '8px',
+                                  background: darkModeTheme ? '#181d2a' : '#ffffff',
+                                  border: darkModeTheme ? '1px solid #2e374d' : '1px solid #cbd5e1',
+                                  color: darkModeTheme ? '#ffffff' : '#0f172a',
+                                  fontSize: '12px',
+                                  fontFamily: 'monospace',
+                                  outline: 'none'
+                                }}
+                              />
+                              <button
+                                type="button"
+                                id="settings-save-email-btn"
+                                disabled={isEmailSubmitting}
+                                onClick={handleRequestEmailChangeSubmit}
+                                style={{
+                                  padding: '8px 14px',
+                                  borderRadius: '8px',
+                                  background: isEmailSubmitting ? '#475569' : '#0284c7',
+                                  color: '#ffffff',
+                                  border: 'none',
+                                  fontSize: '11px',
+                                  fontFamily: 'monospace',
+                                  fontWeight: 'bold',
+                                  cursor: isEmailSubmitting ? 'wait' : 'pointer'
+                                }}
+                              >
+                                {isEmailSubmitting ? 'Sending...' : 'Send Verification'}
+                              </button>
+                            </div>
+                            <div style={{ fontSize: '10px', color: '#94a3b8', fontFamily: 'monospace' }}>
+                              We will notify your current email and send a verification link to the new email address.
+                            </div>
                           </div>
                         ) : (
-                          <div style={{ fontSize: '13px', fontWeight: 700, fontFamily: 'monospace' }}>
-                            {emailState || 'Not registered'}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                            <div style={{ fontSize: '13px', fontWeight: 700, fontFamily: 'monospace' }}>
+                              {userEmail || emailState || 'Not registered'}
+                            </div>
+                            {localPendingEmail && (
+                              <div style={{ fontSize: '10.5px', color: '#fbbf24', fontFamily: 'monospace' }}>
+                                Pending verification: {localPendingEmail}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {emailStatusMsg && (
+                          <div
+                            id="email-change-status-banner"
+                            style={{
+                              marginTop: '4px',
+                              padding: '9px 11px',
+                              borderRadius: '8px',
+                              fontSize: '11px',
+                              fontFamily: 'monospace',
+                              lineHeight: 1.45,
+                              background: emailStatusMsg.isError ? 'rgba(239, 68, 68, 0.14)' : 'rgba(56, 189, 248, 0.14)',
+                              color: emailStatusMsg.isError ? '#f87171' : '#38bdf8',
+                              border: emailStatusMsg.isError ? '1px solid #ef4444' : '1px solid #38bdf8'
+                            }}
+                          >
+                            {emailStatusMsg.text}
                           </div>
                         )}
                       </div>
@@ -1085,17 +1518,18 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                       <button
                         type="submit"
                         id="update-password-submit-btn"
+                        disabled={isPasswordSubmitting}
                         style={{
                           marginTop: '4px',
                           padding: '12px 18px',
                           borderRadius: '8px',
-                          background: '#0284c7',
+                          background: isPasswordSubmitting ? '#475569' : '#0284c7',
                           color: '#ffffff',
                           border: 'none',
                           fontSize: '12px',
                           fontFamily: 'monospace',
                           fontWeight: 'bold',
-                          cursor: 'pointer',
+                          cursor: isPasswordSubmitting ? 'wait' : 'pointer',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center',
@@ -1103,10 +1537,56 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                         }}
                       >
                         <Lock style={{ width: '15px', height: '15px' }} />
-                        <span>Update password</span>
+                        <span>{isPasswordSubmitting ? 'Updating password...' : 'Update password'}</span>
                       </button>
                     </form>
                   </div>
+
+                  {/* Session & Node Access Logout Card */}
+                  {onLogout && (
+                    <div
+                      style={{
+                        padding: '18px',
+                        borderRadius: '12px',
+                        background: darkModeTheme ? 'rgba(239, 68, 68, 0.06)' : 'rgba(239, 68, 68, 0.04)',
+                        border: '1px solid rgba(239, 68, 68, 0.25)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '10px'
+                      }}
+                    >
+                      <div style={{ fontSize: '12px', fontWeight: 900, fontFamily: 'monospace', color: '#f87171' }}>
+                        SESSION LOCK & LOGOUT
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#94a3b8', lineHeight: 1.5 }}>
+                        End your active local session and lock this node. You will need your Operator ID and 4-digit code to log back in.
+                      </div>
+                      <button
+                        type="button"
+                        id="settings-account-logout-btn"
+                        onClick={onLogout}
+                        style={{
+                          alignSelf: 'flex-start',
+                          padding: '10px 18px',
+                          borderRadius: '8px',
+                          background: 'rgba(239, 68, 68, 0.15)',
+                          border: '1px solid #ef4444',
+                          color: '#fca5a5',
+                          fontSize: '12px',
+                          fontFamily: 'monospace',
+                          fontWeight: 'bold',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          marginTop: '4px'
+                        }}
+                      >
+                        <LogOut style={{ width: '15px', height: '15px', color: '#f87171' }} />
+                        <span>Lock Node / Log Out</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1237,7 +1717,7 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                   >
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
                       <div style={{ fontSize: '12px', fontWeight: 900, fontFamily: 'monospace', color: '#38bdf8' }}>
-                        CHIXUS AI ACCESS CONTROL
+                        QORVEX ACCESS CONTROL
                       </div>
                       {aiSaveToast && (
                         <span style={{ fontSize: '10.5px', color: '#10b981', fontFamily: 'monospace', fontWeight: 'bold' }}>
@@ -1246,7 +1726,7 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                       )}
                     </div>
                     <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '16px', lineHeight: 1.4 }}>
-                      Select the level of autonomous assistance and permission granted to CHIXUS AI across your account features. Changes autosave instantly.
+                      Select the level of autonomous assistance and permission granted to Qorvex across your account features. Changes autosave instantly.
                     </div>
 
                     {/* Radio Selection List */}
@@ -1255,17 +1735,17 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                         {
                           id: 'feed' as AiAccessLevel,
                           label: 'Allow to feed',
-                          desc: 'CHIXUS AI can summarize feed posts, suggest technical replies, and moderate circuit discussions.'
+                          desc: 'Qorvex can summarize feed posts, suggest technical replies, and moderate circuit discussions.'
                         },
                         {
                           id: 'inspect' as AiAccessLevel,
                           label: 'Allow to inspect',
-                          desc: 'CHIXUS AI can run automated neural solder joint inspection and confidence calculations on uploaded board images.'
+                          desc: 'Qorvex can run automated neural solder joint inspection and confidence calculations on uploaded board images.'
                         },
                         {
                           id: 'profile' as AiAccessLevel,
                           label: 'Allow to profile and account details',
-                          desc: 'CHIXUS AI can analyze your verification credentials, star tiers, and historical inspection badges.'
+                          desc: 'Qorvex can analyze your verification credentials, star tiers, and historical inspection badges.'
                         },
                         {
                           id: 'none' as AiAccessLevel,
@@ -1401,6 +1881,9 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                             </div>
                             <button
                               type="button"
+                              role="switch"
+                              aria-checked={isChecked}
+                              disabled={savingPrefKey === `email.${item.key}`}
                               onClick={() => toggleEmailAlert(item.key)}
                               style={{
                                 position: 'relative',
@@ -1409,7 +1892,8 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                                 borderRadius: '999px',
                                 background: isChecked ? '#0284c7' : '#475569',
                                 border: 'none',
-                                cursor: 'pointer',
+                                cursor: savingPrefKey === `email.${item.key}` ? 'wait' : 'pointer',
+                                opacity: savingPrefKey === `email.${item.key}` ? 0.6 : 1,
                                 transition: 'background 0.2s ease',
                                 padding: '2px',
                                 flexShrink: 0
@@ -1495,6 +1979,9 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                             </div>
                             <button
                               type="button"
+                              role="switch"
+                              aria-checked={isChecked}
+                              disabled={savingPrefKey === `inApp.${item.key}`}
                               onClick={() => toggleInAppAlert(item.key)}
                               style={{
                                 position: 'relative',
@@ -1503,7 +1990,8 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                                 borderRadius: '999px',
                                 background: isChecked ? '#10b981' : '#475569',
                                 border: 'none',
-                                cursor: 'pointer',
+                                cursor: savingPrefKey === `inApp.${item.key}` ? 'wait' : 'pointer',
+                                opacity: savingPrefKey === `inApp.${item.key}` ? 0.6 : 1,
                                 transition: 'background 0.2s ease',
                                 padding: '2px',
                                 flexShrink: 0
@@ -1840,7 +2328,7 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: darkModeTheme ? '1px solid #1c2230' : '1px solid #e2e8f0' }}>
                         <span style={{ fontSize: '11px', color: '#94a3b8', fontFamily: 'monospace' }}>Platform Edition</span>
-                        <span style={{ fontSize: '11.5px', fontWeight: 'bold', fontFamily: 'monospace' }}>CHIXUS Grid Core v1.0.0</span>
+                        <span style={{ fontSize: '11.5px', fontWeight: 'bold', fontFamily: 'monospace' }}>CHIXUS Grid Core v1.23.4</span>
                       </div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: darkModeTheme ? '1px solid #1c2230' : '1px solid #e2e8f0' }}>
                         <span style={{ fontSize: '11px', color: '#94a3b8', fontFamily: 'monospace' }}>Inspection Standard</span>

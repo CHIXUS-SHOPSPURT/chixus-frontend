@@ -22,6 +22,11 @@ import {
   DollarSign
 } from 'lucide-react';
 import { getHelpCenterKnowledgeAnswer } from '../helpCenterAiKnowledge';
+import {
+  CHIXUS_PRIVACY_POLICY,
+  CHIXUS_SAFETY_POLICY,
+  CHIXUS_TERMS_AND_CONDITIONS
+} from '../data/chixusPolicies';
 
 export interface HelpCenterDrawerSplitViewProps {
   isOpen: boolean;
@@ -48,7 +53,10 @@ export type HelpSectionId =
   | 'maries'
   | 'brain_bookings'
   | 'pricing'
-  | 'terms_grid';
+  | 'terms_grid'
+  | 'privacy_policy'
+  | 'safety_policy'
+  | 'terms_conditions';
 
 export const HelpCenterDrawerSplitView: React.FC<HelpCenterDrawerSplitViewProps> = ({
   isOpen,
@@ -165,7 +173,7 @@ export const HelpCenterDrawerSplitView: React.FC<HelpCenterDrawerSplitViewProps>
         });
       setAiAnswer(reply);
     } catch {
-      setAiAnswer('CHIXUS AI is ready to analyze your Settings and Help Center query. Please try again or tap Submit a Ticket.');
+      setAiAnswer('Qorvex is ready to analyze your Settings and Help Center query. Please try again or tap Submit a Ticket.');
     } finally {
       setIsAiLoading(false);
     }
@@ -180,7 +188,7 @@ export const HelpCenterDrawerSplitView: React.FC<HelpCenterDrawerSplitViewProps>
 
   // ==========================================
   // SUPPORT & CONTACT MODAL STATE
-  // Handled by chixus.support@gmail.com
+  // Handled by Private In-App Encrypted Support Queue
   // ==========================================
   const [isContactModalOpen, setIsContactModalOpen] = useState(false);
   const [contactCategory, setContactCategory] = useState<'support' | 'ticket' | 'feedback'>('support');
@@ -265,6 +273,27 @@ export const HelpCenterDrawerSplitView: React.FC<HelpCenterDrawerSplitViewProps>
       icon: Shield,
       subpageTitle: 'Terms & Grid Policy',
       subpageDescription: '96-hour anti-tamper IndexedDB retention lock, zero-trust credential sovereignty, and IPC-A-610 Class 3 soldering requirements.'
+    },
+    {
+      id: 'privacy_policy',
+      title: 'Privacy Policy',
+      icon: FileText,
+      subpageTitle: 'CHIXUS Sovereign Privacy Policy',
+      subpageDescription: 'Information collected, profile privacy, optical media storage, AI processing limits, and 4-day retention lock.'
+    },
+    {
+      id: 'safety_policy',
+      title: 'Safety Policy',
+      icon: AlertCircle,
+      subpageTitle: 'Hardware Safety & High-Voltage Policy',
+      subpageDescription: 'Mandatory zero-energy verification protocols, Live-Dead-Live (LDL) checks, and AI advisory recommendations.'
+    },
+    {
+      id: 'terms_conditions',
+      title: 'Terms and Conditions',
+      icon: Shield,
+      subpageTitle: 'CHIXUS Network Terms & Conditions',
+      subpageDescription: 'Operator node responsibilities, acceptable platform use, intellectual property, and liability limitations.'
     }
   ];
 
@@ -679,7 +708,7 @@ export const HelpCenterDrawerSplitView: React.FC<HelpCenterDrawerSplitViewProps>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
                   <Sparkles style={{ width: '16px', height: '16px', color: '#10b981' }} />
                   <span style={{ fontSize: '13px', fontWeight: 900, fontFamily: 'monospace', color: darkModeTheme ? '#ffffff' : '#0369a1' }}>
-                    ASK CHIXUS AI (LIVE TECHNICAL ASSISTANT)
+                    ASK QORVEX (LIVE TECHNICAL ASSISTANT)
                   </span>
                 </div>
                 <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '12px' }}>
@@ -785,7 +814,7 @@ export const HelpCenterDrawerSplitView: React.FC<HelpCenterDrawerSplitViewProps>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                         <Bot style={{ width: '15px', height: '15px', color: '#10b981' }} />
                         <span style={{ fontSize: '11px', fontWeight: 'bold', fontFamily: 'monospace', color: '#10b981' }}>
-                          CHIXUS AI Response
+                          Qorvex Response
                         </span>
                       </div>
                       <button
@@ -1079,10 +1108,136 @@ export const HelpCenterDrawerSplitView: React.FC<HelpCenterDrawerSplitViewProps>
                 </div>
               )}
 
+              {/* ============================================================ */}
+              {/* TAB 5: PRIVACY POLICY */}
+              {/* ============================================================ */}
+              {activeSection === 'privacy_policy' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  <div
+                    style={{
+                      padding: '16px 18px',
+                      borderRadius: '12px',
+                      background: darkModeTheme ? 'rgba(56, 189, 248, 0.08)' : '#f0f9ff',
+                      border: '1px solid rgba(56, 189, 248, 0.3)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '4px'
+                    }}
+                  >
+                    <div style={{ fontSize: '13px', fontWeight: 900, fontFamily: 'monospace', color: '#38bdf8' }}>
+                      {CHIXUS_PRIVACY_POLICY.title} (v{CHIXUS_PRIVACY_POLICY.version})
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#94a3b8', fontFamily: 'monospace' }}>
+                      Last Updated: {CHIXUS_PRIVACY_POLICY.lastUpdated} &bull; {CHIXUS_PRIVACY_POLICY.summary}
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      padding: '20px',
+                      borderRadius: '12px',
+                      background: darkModeTheme ? '#0d111c' : '#ffffff',
+                      border: darkModeTheme ? '1px solid #1e2638' : '1px solid #e2e8f0',
+                      fontSize: '11.5px',
+                      lineHeight: 1.7,
+                      color: darkModeTheme ? '#cbd5e1' : '#334155',
+                      fontFamily: 'monospace',
+                      whiteSpace: 'pre-wrap'
+                    }}
+                  >
+                    {CHIXUS_PRIVACY_POLICY.content}
+                  </div>
+                </div>
+              )}
+
+              {/* ============================================================ */}
+              {/* TAB 6: SAFETY POLICY */}
+              {/* ============================================================ */}
+              {activeSection === 'safety_policy' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  <div
+                    style={{
+                      padding: '16px 18px',
+                      borderRadius: '12px',
+                      background: darkModeTheme ? 'rgba(239, 68, 68, 0.08)' : '#fef2f2',
+                      border: '1px solid rgba(239, 68, 68, 0.3)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '4px'
+                    }}
+                  >
+                    <div style={{ fontSize: '13px', fontWeight: 900, fontFamily: 'monospace', color: '#ef4444' }}>
+                      {CHIXUS_SAFETY_POLICY.title} (v{CHIXUS_SAFETY_POLICY.version})
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#94a3b8', fontFamily: 'monospace' }}>
+                      Standard: NFPA 70E / IEEE 1584 &bull; {CHIXUS_SAFETY_POLICY.summary}
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      padding: '20px',
+                      borderRadius: '12px',
+                      background: darkModeTheme ? '#0d111c' : '#ffffff',
+                      border: darkModeTheme ? '1px solid #1e2638' : '1px solid #e2e8f0',
+                      fontSize: '11.5px',
+                      lineHeight: 1.7,
+                      color: darkModeTheme ? '#cbd5e1' : '#334155',
+                      fontFamily: 'monospace',
+                      whiteSpace: 'pre-wrap'
+                    }}
+                  >
+                    {CHIXUS_SAFETY_POLICY.content}
+                  </div>
+                </div>
+              )}
+
+              {/* ============================================================ */}
+              {/* TAB 7: TERMS AND CONDITIONS */}
+              {/* ============================================================ */}
+              {activeSection === 'terms_conditions' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  <div
+                    style={{
+                      padding: '16px 18px',
+                      borderRadius: '12px',
+                      background: darkModeTheme ? 'rgba(168, 85, 247, 0.08)' : '#faf5ff',
+                      border: '1px solid rgba(168, 85, 247, 0.3)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '4px'
+                    }}
+                  >
+                    <div style={{ fontSize: '13px', fontWeight: 900, fontFamily: 'monospace', color: '#c084fc' }}>
+                      {CHIXUS_TERMS_AND_CONDITIONS.title} (v{CHIXUS_TERMS_AND_CONDITIONS.version})
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#94a3b8', fontFamily: 'monospace' }}>
+                      Last Updated: {CHIXUS_TERMS_AND_CONDITIONS.lastUpdated} &bull; {CHIXUS_TERMS_AND_CONDITIONS.summary}
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      padding: '20px',
+                      borderRadius: '12px',
+                      background: darkModeTheme ? '#0d111c' : '#ffffff',
+                      border: darkModeTheme ? '1px solid #1e2638' : '1px solid #e2e8f0',
+                      fontSize: '11.5px',
+                      lineHeight: 1.7,
+                      color: darkModeTheme ? '#cbd5e1' : '#334155',
+                      fontFamily: 'monospace',
+                      whiteSpace: 'pre-wrap'
+                    }}
+                  >
+                    {CHIXUS_TERMS_AND_CONDITIONS.content}
+                  </div>
+                </div>
+              )}
+
               {/* App Version Footer */}
               <div style={{ marginTop: 'auto', paddingTop: '20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderTop: darkModeTheme ? '1px solid #1c2230' : '1px solid #e2e8f0' }}>
                 <span style={{ fontSize: '11px', fontFamily: 'monospace', color: '#94a3b8' }}>
-                  Platform Client: <b style={{ color: '#38bdf8' }}>v1.0.0</b>
+                  Platform Client: <b style={{ color: '#38bdf8' }}>v1.23.4</b>
                 </span>
                 <span style={{ fontSize: '11px', fontFamily: 'monospace', color: '#10b981' }}>
                   Grid Network: Active
@@ -1263,9 +1418,9 @@ export const HelpCenterDrawerSplitView: React.FC<HelpCenterDrawerSplitViewProps>
                   </div>
                 )}
 
-                <div style={{ fontSize: '10.5px', color: '#64748b', fontFamily: 'monospace', display: 'flex', alignItems: 'center', gap: '5px' }}>
-                  <span>Direct Support Endpoint:</span>
-                  <span style={{ color: '#38bdf8', fontWeight: 'bold' }}>chixus.support@gmail.com</span>
+                <div style={{ fontSize: '10.5px', color: '#64748b', fontFamily: 'monospace', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Shield style={{ width: '12px', height: '12px', color: '#10b981', flexShrink: 0 }} />
+                  <span>Encrypted Support Dispatch: Direct In-App Secure Queue (Private)</span>
                 </div>
 
                 <div style={{ display: 'flex', gap: '10px', marginTop: '6px' }}>
