@@ -1,12 +1,12 @@
 // CHIXUS Sovereign Edge Service Worker - Network-First Always-Fresh Architecture
-const CACHE_NAME = 'chixus-pwa-v3.1.0';
+const CACHE_NAME = 'chixus-pwa-v5.0.1';
 const STATIC_ICONS = [
-  '/manifest.json',
-  '/icon.svg',
-  '/pwa-192x192.png',
-  '/pwa-512x512.png',
-  '/pwa-maskable-512x512.png',
-  '/apple-touch-icon.png'
+  '/manifest.json?v=2',
+  '/pwa-192x192.png?v=2',
+  '/pwa-512x512.png?v=2',
+  '/pwa-maskable-512x512.png?v=2',
+  '/apple-touch-icon.png?v=2',
+  '/favicon.ico?v=2'
 ];
 
 self.addEventListener('install', (event) => {

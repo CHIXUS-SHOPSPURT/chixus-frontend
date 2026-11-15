@@ -1479,14 +1479,14 @@ export function App() {
         if ('caches' in window) {
           caches.keys().then((keys) => {
             keys.forEach((key) => {
-              if (key !== 'chixus-pwa-v5.0.0') {
-                console.log('[PWA Engine v5.0.0] Purging obsolete cache fingerprint:', key);
+              if (key !== 'chixus-pwa-v5.0.1') {
+                console.log('[PWA Engine v5.0.1] Purging obsolete cache fingerprint:', key);
                 caches.delete(key);
               }
             });
           }).catch(() => {});
         }
-        navigator.serviceWorker.register('/sw.js?v=5.0.0', { scope: '/', updateViaCache: 'none' })
+        navigator.serviceWorker.register('/sw.js?v=5.0.1', { scope: '/', updateViaCache: 'none' })
           .then((reg) => {
             reg.update().catch(() => {});
           })
