@@ -1273,7 +1273,7 @@ export interface ChixusLiveAppContext {
     soundFeedback: string;
     telemetryPollingRate: string;
     p2pMesh: string;
-    batteryLevel: string;
+    networkStatus?: string;
     activeTab: string;
     voiceLanguage: string;
   };
@@ -2021,7 +2021,7 @@ The optical sensor analyzed the geometry, luminance, and surface spectrum of you
     return `Here is what is currently on your CHIXUS app and your recent activity, ${greetName}:
 
 • Operator Profile: ${appContext?.currentUser?.name || greetName} (Node ID: ${myId}), Location: ${appContext?.currentUser?.location || 'Nigeria'}
-• Active Settings: Theme is ${theme}, Battery is ${appContext?.settings?.batteryLevel || '88%'}, Voice Language is ${appContext?.settings?.voiceLanguage || 'NG-PIDGIN'}
+• Active Settings: Theme is ${theme}, Network Status is ${appContext?.settings?.networkStatus || 'checking'}, Voice Language is ${appContext?.settings?.voiceLanguage || 'NG-PIDGIN'}
 • Feed & Inspections: ${postCount} posts on your Feed, ${scanCount} hardware inspections conducted (${appContext?.inspector?.aiScanAccuracy || '99.8%'} accuracy)
 
 Your Recent App Activity:
@@ -2040,8 +2040,8 @@ ${actionsText}`;
 
 1. Top-Left Avatar (Operator Dossier):
    • Tap your top-left profile photo to view your Node ID (${myId}), change your avatar or banner, edit your name/bio, manage Deployments & Roles, and view your received Peer Endorsements.
-2. Top-Right Battery Indicator:
-   • Displays your real-time device battery percentage and charging status.
+2. Top-Right Network Indicator:
+   • Displays real-time internet & CHIXUS backend connectivity status (Green: stable, Yellow: unstable, Red: poor/unavailable).
 3. Top-Right Bell Icon (Notifications):
    • Opens your Notifications modal showing Administrative Network Metrics, Inbound Connection Requests (Accept Handshake / Decline), and system alerts.
 4. Top-Right 3-Line Menu (Network Admin Drawer):

@@ -48,11 +48,6 @@ import {
   Bot,
   Eye,
   EyeOff,
-  Battery,
-  BatteryCharging,
-  BatteryFull,
-  BatteryMedium,
-  BatteryLow,
   Pin,
   Copy,
   Ban,
@@ -69,6 +64,8 @@ import {
 } from 'lucide-react';
 import SettingsDrawerSplitView from './components/SettingsDrawerSplitView';
 import HelpCenterDrawerSplitView from './components/HelpCenterDrawerSplitView';
+import NetworkStatusIcon from './components/NetworkStatusIcon';
+import { sharedNetworkConnectivityMonitor } from './services/networkConnectivityService';
 import {
   CHIXUS_PRIVACY_POLICY,
   CHIXUS_SAFETY_POLICY,
@@ -4396,8 +4393,6 @@ export function App() {
   const [isSpeakingVoice, setIsSpeakingVoice] = useState<boolean>(false);
   const [spokenTranscriptPreview, setSpokenTranscriptPreview] = useState<string>('');
   const [lightboxImage, setLightboxImage] = useState<{ url: string; title?: string; subtitle?: string } | null>(null);
-  const [batteryLevel, setBatteryLevel] = useState<number>(88);
-  const [isBatteryCharging, setIsBatteryCharging] = useState<boolean>(false);
   const liveVideoRef = useRef<HTMLVideoElement | null>(null);
   const liveStreamRef = useRef<MediaStream | null>(null);
 
@@ -4437,81 +4432,6 @@ export function App() {
   const postHoldStartTimeRef = useRef<number>(0);
   const postHoldStartPosRef = useRef<{ x: number; y: number } | null>(null);
   const postHoldTriggeredRef = useRef<boolean>(false);
-
-  // Sync with real device Battery Status API when supported by the browser
-  useEffect(() => {
-    let batteryManager: any = null;
-    const updateBatteryStatus = () => {
-      if (!batteryManager) return;
-      const pct = Math.round((batteryManager.level ?? 0.88) * 100);
-      setBatteryLevel(Math.max(0, Math.min(100, pct)));
-      setIsBatteryCharging(Boolean(batteryManager.charging));
-    };
-
-    if (typeof navigator !== 'undefined' && typeof (navigator as any).getBattery === 'function') {
-      (navigator as any)
-        .getBattery()
-        .then((bat: any) => {
-          batteryManager = bat;
-          updateBatteryStatus();
-          bat.addEventListener('levelchange', updateBatteryStatus);
-          bat.addEventListener('chargingchange', updateBatteryStatus);
-        })
-        .catch(() => {});
-    }
-
-    return () => {
-      if (batteryManager) {
-        try {
-          batteryManager.removeEventListener('levelchange', updateBatteryStatus);
-          batteryManager.removeEventListener('chargingchange', updateBatteryStatus);
-        } catch {}
-      }
-    };
-  }, []);
-
-  const getBatteryTheme = (level: number, charging: boolean) => {
-    if (charging) {
-      return {
-        color: '#10b981',
-        textColor: '#34d399',
-        bg: 'rgba(16, 185, 129, 0.14)',
-        border: 'rgba(16, 185, 129, 0.45)',
-        glow: '0 0 10px rgba(16, 185, 129, 0.25)',
-        statusText: 'Charging'
-      };
-    }
-    if (level > 50) {
-      return {
-        color: '#10b981',
-        textColor: '#34d399',
-        bg: 'rgba(16, 185, 129, 0.12)',
-        border: 'rgba(16, 185, 129, 0.4)',
-        glow: '0 0 8px rgba(16, 185, 129, 0.2)',
-        statusText: 'Optimal Charge'
-      };
-    }
-    if (level > 20) {
-      return {
-        color: '#f59e0b',
-        textColor: '#fbbf24',
-        bg: 'rgba(245, 158, 11, 0.14)',
-        border: 'rgba(245, 158, 11, 0.45)',
-        glow: '0 0 8px rgba(245, 158, 11, 0.25)',
-        statusText: 'Moderate Charge'
-      };
-    }
-    return {
-      color: '#ef4444',
-      textColor: '#f87171',
-      bg: 'rgba(239, 68, 68, 0.16)',
-      border: 'rgba(239, 68, 68, 0.5)',
-      glow: '0 0 10px rgba(239, 68, 68, 0.35)',
-      statusText: 'Low Battery'
-    };
-  };
-
-  const activeBatteryTheme = getBatteryTheme(batteryLevel, isBatteryCharging);
 
   const preAiDetection = preAiObjectResult;
   const cameraErrorMsg = liveCameraError;
@@ -10363,7 +10283,7 @@ export function App() {
         soundFeedback: soundFeedbackEnabled ? 'Enabled' : 'Muted',
         telemetryPollingRate: nodeTelemetryRate,
         p2pMesh: meshP2PSync ? 'Active' : 'Offline',
-        batteryLevel: `${batteryLevel}% (${isBatteryCharging ? 'Charging' : 'On Battery'})`,
+        networkStatus: sharedNetworkConnectivityMonitor.getSnapshot().status,
         activeTab,
         voiceLanguage: customTribeInput.trim() || selectedTribeVoice
       },
@@ -14008,67 +13928,9 @@ export function App() {
               </div>
             </div>
 
-            {/* Top-Right: Hardware Telemetry Pill, Notification Bell & Menu Hamburger */}
+            {/* Top-Right: Network Connectivity Indicator, Notification Bell & Menu Hamburger */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              {/* Battery / Hardware Telemetry Pill */}
-              <div
-                id="header-battery-status-indicator"
-                role="status"
-                aria-label={`Battery charge ${batteryLevel}%`}
-                onClick={() => {
-                  sound.playClick();
-                  const sampleLevels = [88, 64, 38, 15, 100];
-                  const currentIdx = sampleLevels.findIndex((lvl) => Math.abs(lvl - batteryLevel) < 12);
-                  const nextLevel = sampleLevels[(currentIdx + 1) % sampleLevels.length];
-                  const nextCharging = nextLevel === 100;
-                  setBatteryLevel(nextLevel);
-                  setIsBatteryCharging(nextCharging);
-                  const nextTheme = getBatteryTheme(nextLevel, nextCharging);
-                  triggerToast(`🔋 Hardware Telemetry: ${nextLevel}% (${nextTheme.statusText})`);
-                }}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  height: '34px',
-                  padding: '0 10px',
-                  borderRadius: '10px',
-                  background: '#13161c',
-                  border: '1px solid #2e3540',
-                  boxShadow: 'inset 0 1px 2px rgba(0, 0, 0, 0.6)',
-                  color: '#34d399',
-                  fontFamily: 'monospace',
-                  fontSize: '12px',
-                  fontWeight: 800,
-                  cursor: 'pointer',
-                  userSelect: 'none',
-                  transition: 'all 0.25s ease'
-                }}
-                title={`Battery: ${batteryLevel}% — Tap to toggle telemetry test`}
-              >
-                {isBatteryCharging ? (
-                  <BatteryCharging
-                    style={{
-                      width: '16px',
-                      height: '16px',
-                      color: '#34d399',
-                      flexShrink: 0
-                    }}
-                  />
-                ) : (
-                  <BatteryFull
-                    style={{
-                      width: '16px',
-                      height: '16px',
-                      color: '#34d399',
-                      flexShrink: 0
-                    }}
-                  />
-                )}
-                <span style={{ letterSpacing: '0.4px', color: '#34d399' }}>
-                  {batteryLevel}%
-                </span>
-              </div>
+              <NetworkStatusIcon />
 
               {/* Notification Hub Button with Metallic Bevel */}
               <button

@@ -34,6 +34,7 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
+  if (event.request.url.includes('/health')) return;
 
   event.respondWith(
     fetch(event.request)
@@ -42,7 +43,8 @@ self.addEventListener('fetch', (event) => {
           networkResponse &&
           networkResponse.status === 200 &&
           networkResponse.type === 'basic' &&
-          !event.request.url.includes('/api/')
+          !event.request.url.includes('/api/') &&
+          !event.request.url.includes('/health')
         ) {
           const responseToCache = networkResponse.clone();
           caches.open(CACHE_NAME).then((cache) => {
