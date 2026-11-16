@@ -22,11 +22,12 @@ export function getBackendBaseUrl(): string {
   } catch {}
 
   // Check Vite environment variables
+  const metaEnv = (import.meta as { env?: Record<string, string | undefined> })?.env;
   const envUrl =
-    import.meta.env.VITE_BACKEND_URL ||
-    import.meta.env.VITE_RENDER_URL ||
-    import.meta.env.VITE_FASTAPI_URL ||
-    import.meta.env.VITE_API_URL ||
+    metaEnv?.VITE_BACKEND_URL ||
+    metaEnv?.VITE_RENDER_URL ||
+    metaEnv?.VITE_FASTAPI_URL ||
+    metaEnv?.VITE_API_URL ||
     '';
 
   if (envUrl && typeof envUrl === 'string' && envUrl.trim()) {
@@ -39,10 +40,11 @@ export function getBackendBaseUrl(): string {
 
 export function getWebSocketUrl(): string {
   // Check explicit environment variable
+  const metaEnv = (import.meta as { env?: Record<string, string | undefined> })?.env;
   const envWs =
-    import.meta.env.VITE_WS_URL ||
-    import.meta.env.VITE_RENDER_WS_URL ||
-    import.meta.env.VITE_FASTAPI_WS_URL ||
+    metaEnv?.VITE_WS_URL ||
+    metaEnv?.VITE_RENDER_WS_URL ||
+    metaEnv?.VITE_FASTAPI_WS_URL ||
     '';
   if (envWs && typeof envWs === 'string' && envWs.trim()) {
     return envWs.trim();

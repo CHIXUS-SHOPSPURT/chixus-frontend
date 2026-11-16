@@ -16,61 +16,61 @@
 
 /* Sovereign Brushed Silver & Metallic Accents */
 .silver-gradient-surface {
-  background: linear-gradient(135deg, rgba(30, 36, 45, 0.95) 0%, rgba(15, 18, 24, 0.98) 50%, rgba(22, 28, 36, 0.95) 100%);
-  border: 1px solid rgba(192, 204, 218, 0.22);
-  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  background: linear-gradient(145deg, rgba(16, 22, 34, 0.96) 0%, rgba(9, 12, 19, 0.99) 55%, rgba(14, 19, 30, 0.96) 100%);
+  border: 1px solid rgba(203, 213, 225, 0.18);
+  box-shadow: 0 12px 32px -12px rgba(0, 0, 0, 0.72), inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
 
 .silver-metallic-border {
-  border: 1px solid rgba(192, 204, 218, 0.28);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15), 0 0 15px rgba(148, 163, 184, 0.08);
+  border: 1px solid rgba(203, 213, 225, 0.24);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 0 18px rgba(56, 189, 248, 0.08);
 }
 
 .silver-metallic-button {
-  background: linear-gradient(180deg, #e2e8f0 0%, #cbd5e1 50%, #94a3b8 100%);
-  color: #090d14;
-  font-weight: 600;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.8);
+  background: linear-gradient(180deg, #f8fafc 0%, #dbe4f0 48%, #9fb1c7 100%);
+  color: #070a10;
+  font-weight: 700;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45), inset 0 1px 1px rgba(255, 255, 255, 0.85);
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .silver-metallic-button:hover:not(:disabled) {
-  background: linear-gradient(180deg, #ffffff 0%, #e2e8f0 50%, #cbd5e1 100%);
-  box-shadow: 0 4px 14px rgba(226, 232, 240, 0.25), inset 0 1px 2px rgba(255, 255, 255, 1);
+  background: linear-gradient(180deg, #ffffff 0%, #e8eef6 48%, #cbd5e1 100%);
+  box-shadow: 0 6px 18px rgba(56, 189, 248, 0.22), inset 0 1px 2px rgba(255, 255, 255, 1);
   transform: translateY(-1px);
 }
 
 .silver-metallic-button:disabled {
-  background: #1e2530;
+  background: #141a24;
   color: #64748b;
-  border: 1px solid #334155;
+  border: 1px solid #283344;
   box-shadow: none;
   cursor: not-allowed;
   transform: none;
 }
 
 .caution-surface {
-  background: linear-gradient(145deg, rgba(28, 20, 16, 0.95) 0%, rgba(18, 14, 12, 0.98) 100%);
-  border: 1px solid rgba(245, 158, 11, 0.35);
-  box-shadow: 0 15px 35px -10px rgba(0, 0, 0, 0.7), inset 0 1px 0 rgba(251, 191, 36, 0.25);
+  background: linear-gradient(145deg, rgba(16, 22, 34, 0.96) 0%, rgba(9, 12, 19, 0.98) 100%);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  box-shadow: 0 15px 35px -10px rgba(0, 0, 0, 0.7), inset 0 1px 0 rgba(125, 211, 252, 0.22);
 }
 
 .matrix-grid-bg {
   background-size: 32px 32px;
   background-image: 
-    linear-gradient(to right, rgba(148, 163, 184, 0.05) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(148, 163, 184, 0.05) 1px, transparent 1px);
+    linear-gradient(to right, rgba(148, 163, 184, 0.045) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(56, 189, 248, 0.04) 1px, transparent 1px);
 }
 
 @keyframes scanBarPulseGlow {
   0%, 100% {
     opacity: 0.92;
-    box-shadow: 0 0 12px rgba(56, 189, 248, 0.65), 0 0 24px rgba(16, 185, 129, 0.35), inset 0 0 8px rgba(255, 255, 255, 0.45);
+    box-shadow: 0 0 12px rgba(56, 189, 248, 0.65), 0 0 24px rgba(37, 99, 235, 0.35), inset 0 0 8px rgba(255, 255, 255, 0.45);
     filter: brightness(1);
   }
   50% {
     opacity: 1;
-    box-shadow: 0 0 20px rgba(56, 189, 248, 0.95), 0 0 38px rgba(16, 185, 129, 0.6), inset 0 0 12px rgba(255, 255, 255, 0.75);
+    box-shadow: 0 0 20px rgba(56, 189, 248, 0.95), 0 0 38px rgba(37, 99, 235, 0.6), inset 0 0 12px rgba(255, 255, 255, 0.75);
     filter: brightness(1.18);
   }
 }
@@ -82,7 +82,7 @@
   }
   50% {
     box-shadow: 0 0 18px rgba(56, 189, 248, 0.42), inset 0 1px 3px rgba(0, 0, 0, 0.8);
-    border-color: rgba(52, 211, 153, 0.7);
+    border-color: rgba(125, 211, 252, 0.75);
   }
 }
 
@@ -95,17 +95,32 @@
   animation: scanTrackSubtleGlow 1.4s infinite ease-in-out;
 }
 
-/* Tactical Metallic Industrial OS Aesthetics */
+/* Tactical Metallic Industrial OS Aesthetics — Obsidian Black, Brushed Silver & Electric Cobalt-Blue */
 .tactical-surface {
-  background: #111317;
-  border: 1px solid #282d37;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 8px 24px rgba(0, 0, 0, 0.55);
+  background: linear-gradient(165deg, #10141d 0%, #090c12 100%);
+  border: 1px solid rgba(203, 213, 225, 0.14);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 10px 28px rgba(0, 0, 0, 0.6);
+}
+
+.tactical-surface-light {
+  background: linear-gradient(165deg, #ffffff 0%, #f1f5f9 100%);
+  border: 1px solid #cbd5e1;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 8px 22px rgba(15, 23, 42, 0.07);
+}
+
+.feed-card-lift {
+  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.22s ease, box-shadow 0.22s ease;
+}
+
+.feed-card-lift:hover {
+  border-color: rgba(56, 189, 248, 0.34) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 14px 32px rgba(0, 0, 0, 0.65), 0 0 24px rgba(37, 99, 235, 0.08) !important;
 }
 
 .tactical-beveled-frame {
-  background: linear-gradient(145deg, #181b22 0%, #101216 100%);
-  border: 1px solid #323844;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 10px 30px rgba(0, 0, 0, 0.65);
+  background: linear-gradient(145deg, #131823 0%, #090c12 100%);
+  border: 1px solid rgba(203, 213, 225, 0.18);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.09), 0 10px 30px rgba(0, 0, 0, 0.65);
 }
 
 .tactical-avatar-bezel {
@@ -114,28 +129,28 @@
   align-items: center;
   justify-content: center;
   border-radius: 9999px;
-  background: linear-gradient(135deg, #4b5563 0%, #1f2937 50%, #374151 100%);
-  padding: 2.5px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.7), inset 0 1px 1px rgba(255, 255, 255, 0.45);
+  background: linear-gradient(135deg, #cbd5e1 0%, #334155 48%, #38bdf8 100%);
+  padding: 2px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.65), 0 0 12px rgba(56, 189, 248, 0.16), inset 0 1px 1px rgba(255, 255, 255, 0.5);
 }
 
 .tactical-avatar-bezel img {
   border-radius: 9999px;
-  border: 1px solid #0d0f14;
+  border: 1px solid #090c12;
 }
 
 .tactical-brushed-silver-btn {
-  background: linear-gradient(180deg, #f1f5f9 0%, #cbd5e1 50%, #94a3b8 100%);
-  color: #0f172a;
+  background: linear-gradient(180deg, #f8fafc 0%, #dbe4f0 48%, #9fb1c7 100%);
+  color: #070a10;
   font-weight: 800;
-  border: 1px solid #475569;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45), inset 0 1px 1px rgba(255, 255, 255, 0.95);
+  border: 1px solid rgba(226, 232, 240, 0.65);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.48), 0 0 14px rgba(56, 189, 248, 0.14), inset 0 1px 1px rgba(255, 255, 255, 0.95);
   transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .tactical-brushed-silver-btn:hover:not(:disabled) {
-  background: linear-gradient(180deg, #ffffff 0%, #e2e8f0 50%, #cbd5e1 100%);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.55), inset 0 1px 2px rgba(255, 255, 255, 1);
+  background: linear-gradient(180deg, #ffffff 0%, #e8eef6 48%, #cbd5e1 100%);
+  box-shadow: 0 6px 20px rgba(56, 189, 248, 0.25), inset 0 1px 2px rgba(255, 255, 255, 1);
   transform: translateY(-1px);
 }
 
@@ -147,31 +162,31 @@
 .tactical-pill-bar {
   display: flex;
   align-items: center;
-  background: #121418;
-  border: 1px solid #282d37;
+  background: #0b0e14;
+  border: 1px solid rgba(203, 213, 225, 0.15);
   border-radius: 9999px;
   padding: 3px 4px;
-  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.7);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.75);
 }
 
 .tactical-pill-tab-active {
-  background: linear-gradient(180deg, #f1f5f9 0%, #cbd5e1 50%, #94a3b8 100%);
-  color: #0f172a !important;
+  background: linear-gradient(180deg, #f8fafc 0%, #d8e1ec 50%, #94a3b8 100%);
+  color: #070a10 !important;
   font-weight: 800 !important;
   border-radius: 9999px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5), inset 0 1px 1px rgba(255, 255, 255, 0.9);
+  box-shadow: 0 2px 10px rgba(56, 189, 248, 0.2), inset 0 1px 1px rgba(255, 255, 255, 0.95);
 }
 
 .tactical-pill-divider {
   width: 1px;
   height: 16px;
-  background: #282d37;
+  background: rgba(148, 163, 184, 0.22);
   flex-shrink: 0;
 }
 
 .tactical-capsule-badge {
-  background: #161820;
-  border: 1px solid #2d3340;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(148, 163, 184, 0.25);
   color: #cbd5e1;
   border-radius: 6px;
   padding: 2px 8px;
@@ -180,37 +195,315 @@
 }
 
 .tactical-emerald-capsule {
-  background: rgba(16, 185, 129, 0.12);
-  border: 1px solid rgba(52, 211, 153, 0.4);
-  color: #34d399;
+  background: rgba(37, 99, 235, 0.16);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  color: #7dd3fc;
   border-radius: 9999px;
   padding: 3px 10px;
   font-family: monospace;
   font-size: 11px;
   font-weight: 700;
-}
-
-.tactical-action-btn {
-  background: #161820;
-  border: 1px solid #2b313d;
-  color: #d1d5db;
-  border-radius: 8px;
-  padding: 6px 12px;
-  font-family: monospace;
-  font-size: 11.5px;
   transition: all 0.15s ease;
 }
 
+.tactical-action-btn {
+  background: #0d1119;
+  border: 1px solid rgba(203, 213, 225, 0.16);
+  color: #d1d5db;
+  border-radius: 9px;
+  padding: 6px 12px;
+  font-family: monospace;
+  font-size: 11.5px;
+  transition: all 0.16s ease;
+}
+
 .tactical-action-btn:hover {
-  background: #1c1f28;
-  border-color: #3e4657;
+  background: #141b27;
+  border-color: rgba(56, 189, 248, 0.45);
   color: #ffffff;
 }
 
 .tactical-inset-input {
-  background: #0b0c0f;
-  border: 1px solid #22262f;
-  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.7);
+  background: #07090e;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.72);
   color: #e2e8f0;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
+
+.tactical-inset-input:focus {
+  border-color: rgba(56, 189, 248, 0.6) !important;
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.72), 0 0 0 2px rgba(56, 189, 248, 0.14) !important;
+}
+
+@keyframes liveBluePulse {
+  0%, 100% {
+    opacity: 0.75;
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.55);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.12);
+    box-shadow: 0 0 0 5px rgba(56, 189, 248, 0);
+  }
+}
+
+.live-blue-pulse-dot {
+  animation: liveBluePulse 2s infinite ease-in-out;
+}
+
+@keyframes qorvexStepSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.qorvex-step-row {
+  animation: qorvexStepSlideIn 0.24s ease-out forwards;
+}
+
+/* CHIXUS Onboarding PCB Hero Animations (5.4s seamless industrial sequence, GPU-composited) */
+@keyframes chixusPcbDepthFloat {
+  0%, 100% {
+    transform: perspective(1200px) rotateX(2.5deg) rotateY(-1.5deg) scale(1.015);
+  }
+  50% {
+    transform: perspective(1200px) rotateX(1deg) rotateY(1.2deg) scale(1.03);
+  }
+}
+
+@keyframes chixusScanBeamSweep {
+  0%, 9% {
+    transform: translate3d(-135%, 0, 0);
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  68% {
+    opacity: 1;
+  }
+  76%, 100% {
+    transform: translate3d(520%, 0, 0);
+    opacity: 0;
+  }
+}
+
+@keyframes chixusTraceZoneOne {
+  0%, 10% {
+    opacity: 0.14;
+  }
+  20%, 34% {
+    opacity: 0.92;
+  }
+  50%, 82% {
+    opacity: 0.24;
+  }
+  92%, 100% {
+    opacity: 0.14;
+  }
+}
+
+@keyframes chixusTraceZoneTwo {
+  0%, 24% {
+    opacity: 0.14;
+  }
+  36%, 52% {
+    opacity: 0.95;
+  }
+  68%, 85% {
+    opacity: 0.26;
+  }
+  94%, 100% {
+    opacity: 0.14;
+  }
+}
+
+@keyframes chixusTraceZoneThree {
+  0%, 40% {
+    opacity: 0.14;
+  }
+  52%, 68% {
+    opacity: 0.9;
+  }
+  82%, 90% {
+    opacity: 0.24;
+  }
+  96%, 100% {
+    opacity: 0.14;
+  }
+}
+
+@keyframes chixusSignalPulseFlow {
+  0%, 12% {
+    stroke-dashoffset: 360;
+    opacity: 0;
+  }
+  20% {
+    opacity: 0.95;
+  }
+  66% {
+    opacity: 0.85;
+  }
+  76%, 100% {
+    stroke-dashoffset: -120;
+    opacity: 0;
+  }
+}
+
+@keyframes chixusDetectionReticleA {
+  0%, 18% {
+    opacity: 0.12;
+    transform: scale(0.94);
+  }
+  24%, 40% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  56%, 84% {
+    opacity: 0.28;
+    transform: scale(0.98);
+  }
+  100% {
+    opacity: 0.12;
+    transform: scale(0.94);
+  }
+}
+
+@keyframes chixusDetectionReticleB {
+  0%, 34% {
+    opacity: 0.12;
+    transform: scale(0.94);
+  }
+  40%, 58% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  72%, 86% {
+    opacity: 0.32;
+    transform: scale(0.98);
+  }
+  100% {
+    opacity: 0.12;
+    transform: scale(0.94);
+  }
+}
+
+@keyframes chixusDetectionReticleC {
+  0%, 50% {
+    opacity: 0.12;
+    transform: scale(0.94);
+  }
+  56%, 72% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  84%, 92% {
+    opacity: 0.28;
+    transform: scale(0.98);
+  }
+  100% {
+    opacity: 0.12;
+    transform: scale(0.94);
+  }
+}
+
+.chixus-pcb-stage {
+  animation: chixusPcbDepthFloat 10.8s ease-in-out infinite;
+  will-change: transform;
+}
+
+.chixus-pcb-scan-beam {
+  animation: chixusScanBeamSweep 5.4s cubic-bezier(0.38, 0.04, 0.28, 0.98) infinite;
+  will-change: transform, opacity;
+}
+
+.chixus-trace-zone-1 {
+  animation: chixusTraceZoneOne 5.4s ease-in-out infinite;
+  will-change: opacity;
+}
+
+.chixus-trace-zone-2 {
+  animation: chixusTraceZoneTwo 5.4s ease-in-out infinite;
+  will-change: opacity;
+}
+
+.chixus-trace-zone-3 {
+  animation: chixusTraceZoneThree 5.4s ease-in-out infinite;
+  will-change: opacity;
+}
+
+.chixus-signal-pulse {
+  stroke-dasharray: 46 314;
+  animation: chixusSignalPulseFlow 5.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  will-change: stroke-dashoffset, opacity;
+}
+
+.chixus-signal-pulse-delayed {
+  stroke-dasharray: 42 318;
+  animation: chixusSignalPulseFlow 5.4s cubic-bezier(0.4, 0, 0.2, 1) 0.55s infinite;
+  will-change: stroke-dashoffset, opacity;
+}
+
+.chixus-reticle-a {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: chixusDetectionReticleA 5.4s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+.chixus-reticle-b {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: chixusDetectionReticleB 5.4s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+.chixus-reticle-c {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: chixusDetectionReticleC 5.4s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chixus-pcb-stage {
+    animation: none !important;
+    transform: perspective(1200px) rotateX(1.5deg) scale(1.015) !important;
+  }
+
+  .chixus-pcb-scan-beam {
+    animation: none !important;
+    opacity: 0 !important;
+  }
+
+  .chixus-trace-zone-1,
+  .chixus-trace-zone-2,
+  .chixus-trace-zone-3 {
+    animation: none !important;
+    opacity: 0.52 !important;
+  }
+
+  .chixus-signal-pulse,
+  .chixus-signal-pulse-delayed {
+    animation: none !important;
+    stroke-dasharray: none !important;
+    opacity: 0.35 !important;
+  }
+
+  .chixus-reticle-a,
+  .chixus-reticle-b,
+  .chixus-reticle-c {
+    animation: none !important;
+    opacity: 0.85 !important;
+    transform: scale(1) !important;
+  }
+}
+
 

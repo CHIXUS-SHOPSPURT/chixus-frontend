@@ -1370,6 +1370,18 @@ Provide:
     country: 'Nigeria',
     avatar: ''
   });
+  backendUsers.set('CHI-8492-NG', {
+    id: 'CHI-8492-NG',
+    username: 'CHI-8492-NG',
+    full_name: 'Gopguy Tester',
+    location: 'Lagos, Nigeria',
+    phone: '+234 800 555 8492',
+    email: 'gopguy0@gmail.com',
+    password_hash: '2022',
+    headline: 'QA & Diagnostic Testing Account',
+    country: 'Nigeria',
+    avatar: ''
+  });
   // ========================================================
   // SYSTEM & SUPPORT EMAIL ARCHITECTURE
   // ========================================================
@@ -1937,14 +1949,92 @@ Provide:
     }
   });
 
-  // Endpoint 5: Handle /api/admin/sql safely so duplicate checks return quickly
+  // Endpoint 5: Handle /api/admin/sql safely so queries respect table & WHERE filters
   app.get('/api/admin/sql', (req: Request, res: Response) => {
     try {
-      const usersList = Array.from(backendUsers.values());
-      return res.json({
-        status: 'success',
-        data: usersList
-      });
+      const rawSql = String(req.query.query || '').trim();
+      const upperSql = rawSql.toUpperCase();
+
+      if (!rawSql || !upperSql.startsWith('SELECT')) {
+        return res.json({ status: 'success', data: [] });
+      }
+
+      if (/\bFROM\s+POSTS\b/i.test(rawSql)) {
+        const mappedPosts = serverPosts.map((p) => ({
+          id: p.id,
+          author_id: p.author_id,
+          author_name: p.author,
+          author_headline: p.badge || '',
+          content: p.content,
+          image_url: p.image_url || '',
+          likes_count: p.verifications || 0,
+          created_at: p.createdAt || Date.now()
+        }));
+        return res.json({ status: 'success', data: mappedPosts });
+      }
+
+      if (/\bFROM\s+USERS\b/i.test(rawSql)) {
+        const allUsers = Array.from(backendUsers.values());
+        const whereIdx = upperSql.indexOf(' WHERE ');
+        if (whereIdx === -1) {
+          return res.json({ status: 'success', data: allUsers });
+        }
+
+        const wherePart = rawSql.slice(whereIdx + 7);
+        const unescapeSql = (val: string) => val.replace(/''/g, "'").trim();
+
+        const targetIds = new Set<string>();
+        const idEqRegex = /\b(?:UPPER\s*\(\s*)?(?:TRIM\s*\(\s*UPPER\s*\(\s*)?(?:id|username)\s*\)?\s*\)?\s*=\s*(?:UPPER\s*\(\s*)?'((?:''|[^'])*)'\s*\)?/gi;
+        let m: RegExpExecArray | null;
+        while ((m = idEqRegex.exec(wherePart)) !== null) {
+          const val = unescapeSql(m[1]).toUpperCase();
+          if (val) targetIds.add(val);
+        }
+
+        const idInRegex = /\b(?:UPPER\s*\(\s*)?(?:id|username)\s*\)?\s+IN\s*\(([^)]+)\)/gi;
+        while ((m = idInRegex.exec(wherePart)) !== null) {
+          const itemRegex = /'((?:''|[^'])*)'/g;
+          let im: RegExpExecArray | null;
+          while ((im = itemRegex.exec(m[1])) !== null) {
+            const val = unescapeSql(im[1]).toUpperCase();
+            if (val) targetIds.add(val);
+          }
+        }
+
+        const targetNames = new Set<string>();
+        const nameRegex = /\bfull_name\s*\)?\s*\)?\s*=\s*(?:LOWER\s*\(\s*)?'((?:''|[^'])*)'\s*\)?/gi;
+        while ((m = nameRegex.exec(wherePart)) !== null) {
+          const val = unescapeSql(m[1]).toLowerCase();
+          if (val) targetNames.add(val);
+        }
+
+        const targetEmails = new Set<string>();
+        const emailRegex = /\bemail\s*\)?\s*\)?\s*=\s*(?:LOWER\s*\(\s*)?'((?:''|[^'])*)'\s*\)?/gi;
+        while ((m = emailRegex.exec(wherePart)) !== null) {
+          const val = unescapeSql(m[1]).toLowerCase();
+          if (val) targetEmails.add(val);
+        }
+
+        let filtered = allUsers.filter((u) => {
+          const uId = String(u.id || '').trim().toUpperCase();
+          const uUser = String(u.username || '').trim().toUpperCase();
+          const uName = String(u.full_name || '').trim().toLowerCase();
+          const uEmail = String(u.email || '').trim().toLowerCase();
+          if (targetIds.size > 0 && (targetIds.has(uId) || targetIds.has(uUser))) return true;
+          if (targetNames.size > 0 && targetNames.has(uName)) return true;
+          if (targetEmails.size > 0 && targetEmails.has(uEmail)) return true;
+          return false;
+        });
+
+        if (/\bLIMIT\s+1\b/i.test(rawSql)) {
+          filtered = filtered.slice(0, 1);
+        }
+
+        return res.json({ status: 'success', data: filtered });
+      }
+
+      // Other client-synced SQLite tables (connection requests, notifications, direct messages, endorsements)
+      return res.json({ status: 'success', data: [] });
     } catch {
       return res.json({ status: 'success', data: [] });
     }

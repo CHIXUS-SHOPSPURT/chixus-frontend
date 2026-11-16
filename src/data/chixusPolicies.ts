@@ -26,7 +26,7 @@ export const CHIXUS_PRIVACY_POLICY: PolicyDocument = {
   summary: 'How CHIXUS collects, secures, encrypts, and retains operator profile data, optical PCB captures, and telemetry logs.',
   content: `CHIXUS SOVEREIGN PRIVACY POLICY
 Effective Date: November 2026
-Entity Reference: CHIXUS Sovereign Verification Network [PLACEHOLDER: Legal Registration Entity]
+Entity Reference: CHIXUS Technical Verification Network
 
 SECTION 1: SCOPE & SOVEREIGN PRINCIPLES
 This Privacy Policy governs how the CHIXUS platform ("Network", "we", "us") collects, encrypts, processes, and protects your information when accessing our optical fault inspection applications, telemetry grids, and operator interfaces. We operate on zero-knowledge, data-minimization, and decentralized operator sovereignty principles.
@@ -55,7 +55,7 @@ SECTION 5: DATA RETENTION & MANDATORY 4-DAY ANTI-TAMPER LOCK
 
 SECTION 6: ACCOUNT DELETION & OPERATOR RIGHTS
 - Operators possess the sovereign right to request complete account decommissioning, credential invalidation, and data removal subject to active regulatory audit locks.
-- To exercise your rights under GDPR, CCPA, or applicable data sovereignty regulations, access the Help Center or contact support at [PLACEHOLDER: privacy@chixus.network].`
+- To exercise your privacy or data rights under applicable regulations, please access the Help Center or contact customer support directly inside the CHIXUS app.`
 };
 
 export const CHIXUS_SAFETY_POLICY: PolicyDocument = {

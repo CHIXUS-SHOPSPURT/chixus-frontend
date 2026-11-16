@@ -272,18 +272,112 @@ async function apiFetchJson<T>(
   }
 }
 
+const HARDCODED_TEST_TOKEN_PREFIX = 'chixus-test-session-';
+
+const HARDCODED_TEST_ACCOUNTS: Array<{
+  chixusId: string;
+  email: string;
+  password: string;
+  profile: PermanentUserIdentity;
+}> = [
+  {
+    chixusId: 'CHI-8492-NG',
+    email: 'gopguy0@gmail.com',
+    password: '2022',
+    profile: {
+      internal_id: 'CHI-8492-NG',
+      chixus_id: 'CHI-8492-NG',
+      phone_number: '+234 800 555 8492',
+      email: 'gopguy0@gmail.com',
+      full_name: 'Gopguy Tester',
+      username: 'CHI-8492-NG',
+      location: 'Lagos, Nigeria',
+      headline: 'QA & Diagnostic Testing Account',
+      country: 'Nigeria',
+      inspections_conducted: 0,
+      faults_isolated: 0,
+      ai_scan_accuracy: '0.0%',
+      is_id_public: true,
+      ai_access_level: 'everything',
+      pending_phone: null,
+      pending_email: null
+    }
+  }
+];
+
+function findHardcodedTestAccount(identifier: string) {
+  const clean = (identifier || '').trim().toLowerCase();
+  if (!clean) return undefined;
+  return HARDCODED_TEST_ACCOUNTS.find(
+    (acc) => acc.chixusId.toLowerCase() === clean || acc.email.toLowerCase() === clean
+  );
+}
+
+export function isHardcodedTestIdentifier(identifier: string): boolean {
+  return Boolean(findHardcodedTestAccount(identifier));
+}
+
 export async function loginWithIdentifier(
   identifier: string,
   password: string
 ): Promise<{ token: string; user: PermanentUserIdentity; preferences?: UserPreferencesPayload }> {
-  const cleanId = identifier.trim().toUpperCase();
+  const rawTrimmed = identifier.trim();
+  const cleanId = rawTrimmed.toUpperCase();
+  const hardcoded = findHardcodedTestAccount(rawTrimmed);
   const isChixusId = /^CHI-[A-Z0-9]{4}-[A-Z]{2,3}$/i.test(cleanId);
-  if (!isChixusId) {
+
+  if (!isChixusId && !hardcoded) {
     throw new ApiRequestError(
       'Invalid ID — Please enter a valid CHIXUS ID (e.g. CHI-2022-NG).',
       400,
       'INVALID_CHIXUS_ID'
     );
+  }
+
+  if (hardcoded) {
+    if (password.trim() !== hardcoded.password) {
+      throw new ApiRequestError(
+        'Invalid security password. Please check your credentials.',
+        401,
+        'INVALID_CREDENTIALS'
+      );
+    }
+
+    const fallbackToken = `${HARDCODED_TEST_TOKEN_PREFIX}${hardcoded.chixusId}`;
+    try {
+      const data = await apiFetchJson<AuthSessionResponse>(API_ENDPOINTS.AUTH_LOGIN(), {
+        method: 'POST',
+        requireAuth: false,
+        timeoutMs: 2500,
+        body: JSON.stringify({
+          chixus_id: hardcoded.chixusId,
+          operator_id: hardcoded.chixusId,
+          node_id: hardcoded.chixusId,
+          identifier: hardcoded.chixusId,
+          email: hardcoded.email,
+          password: password.trim()
+        })
+      });
+
+      const serverToken = String(data.access_token || data.token || '').trim();
+      const activeToken = serverToken || fallbackToken;
+      setAuthToken(activeToken);
+
+      const rawUser = data.user || data.operator || hardcoded.profile;
+      const user = normalizeAccountProfile(rawUser);
+      const preferences = data.preferences ? normalizePreferences(data.preferences) : { ...DEFAULT_USER_PREFERENCES };
+      return { token: activeToken, user, preferences };
+    } catch (err: unknown) {
+      if (err instanceof ApiRequestError && err.status === 401) {
+        throw err;
+      }
+      setAuthToken(fallbackToken);
+      return {
+        token: fallbackToken,
+        user: { ...hardcoded.profile },
+        preferences: { ...DEFAULT_USER_PREFERENCES }
+      };
+    }
   }
 
   const payload: Record<string, any> = {
@@ -368,6 +462,14 @@ export async function registerOperatorAccount(input: {
 }
 
 export async function fetchAuthenticatedAccount(): Promise<PermanentUserIdentity> {
+  const currentToken = getAuthToken();
+  if (currentToken.startsWith(HARDCODED_TEST_TOKEN_PREFIX)) {
+    const id = currentToken.slice(HARDCODED_TEST_TOKEN_PREFIX.length);
+    const hardcoded = findHardcodedTestAccount(id);
+    if (hardcoded) {
+      return { ...hardcoded.profile };
+    }
+  }
   const data = await apiFetchJson<{ status: string; user: Record<string, any> }>(API_ENDPOINTS.ACCOUNT_ME(), {
     method: 'GET',
     requireAuth: true
@@ -376,6 +478,10 @@ export async function fetchAuthenticatedAccount(): Promise<PermanentUserIdentity
 }
 
 export async function fetchUserPreferences(): Promise<UserPreferencesPayload> {
+  const currentToken = getAuthToken();
+  if (currentToken.startsWith(HARDCODED_TEST_TOKEN_PREFIX)) {
+    return { ...DEFAULT_USER_PREFERENCES };
+  }
   const data = await apiFetchJson<{ status?: string; preferences?: Record<string, any> }>(
     API_ENDPOINTS.SETTINGS_PREFERENCES(),
     {

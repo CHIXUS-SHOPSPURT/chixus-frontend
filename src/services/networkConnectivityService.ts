@@ -1,11 +1,19 @@
-import { API_ENDPOINTS } from '../apiConfig';
+import { API_ENDPOINTS, getBackendBaseUrl } from '../apiConfig';
 
 export type ConnectivityStatus = 'unknown' | 'stable' | 'unstable' | 'poor';
+
+interface NetworkInformationLike extends EventTarget {
+  effectiveType?: 'slow-2g' | '2g' | '3g' | '4g';
+  type?: 'bluetooth' | 'cellular' | 'ethernet' | 'none' | 'wifi' | 'wimax' | 'other' | 'unknown';
+  rtt?: number;
+  downlink?: number;
+  saveData?: boolean;
+}
 
 export interface ConnectivityMonitorConfig {
   /** Polling interval while the app tab is visible (ms). */
   checkIntervalMs: number;
-  /** Maximum duration to wait for a GET /health response before timing out (ms). */
+  /** Maximum duration to wait for a probe response before timing out (ms). */
   requestTimeoutMs: number;
   /** Latency at or below this threshold is considered fast/stable (ms). */
   stableLatencyThresholdMs: number;
@@ -25,8 +33,18 @@ export interface ConnectivityMonitorConfig {
   historyWindowSize: number;
   /** Minimum delay between event-triggered checks to prevent request bursts (ms). */
   minCheckGapMs: number;
+  /** Whether to automatically run a soft-refresh check when transitioning from poor (Red) back to unstable (Yellow). */
+  enableRecoverySoftRefresh: boolean;
+  /** Delay before firing an automatic recovery soft-refresh probe after Red -> Yellow transition (ms). */
+  softRefreshDelayMs: number;
+  /** Minimum cooldown between separate Red -> Yellow soft-refresh episodes to avoid battery drain on flapping links (ms). */
+  softRefreshCooldownMs: number;
+  /** Maximum bounded follow-up soft-refresh probes per Red -> Yellow recovery episode. */
+  maxConsecutiveSoftRefreshes: number;
   /** Resolver returning the CHIXUS backend GET /health URL. */
   healthUrlResolver: () => string;
+  /** Optional external probe used when /health returns static HTML or no dedicated backend is configured. */
+  internetProbeUrlResolver?: () => string;
 }
 
 export interface ConnectivitySnapshot {
@@ -35,10 +53,12 @@ export interface ConnectivitySnapshot {
   consecutiveFailures: number;
   lastCheckedAt: number | null;
   isChecking: boolean;
+  isSoftRefreshing: boolean;
+  lastSoftRefreshAt: number | null;
 }
 
 export const DEFAULT_CONNECTIVITY_CONFIG: ConnectivityMonitorConfig = {
-  checkIntervalMs: 20000,
+  checkIntervalMs: 15000,
   requestTimeoutMs: 4500,
   stableLatencyThresholdMs: 900,
   poorLatencyThresholdMs: 3000,
@@ -49,10 +69,25 @@ export const DEFAULT_CONNECTIVITY_CONFIG: ConnectivityMonitorConfig = {
   consecutiveGoodForStable: 2,
   historyWindowSize: 5,
   minCheckGapMs: 2500,
-  healthUrlResolver: () => API_ENDPOINTS.HEALTH()
+  enableRecoverySoftRefresh: true,
+  softRefreshDelayMs: 1500,
+  softRefreshCooldownMs: 6000,
+  maxConsecutiveSoftRefreshes: 3,
+  healthUrlResolver: () => API_ENDPOINTS.HEALTH(),
+  internetProbeUrlResolver: () => `https://www.gstatic.com/generate_204?_t=${Date.now()}`
 };
 
 export type ConnectivityListener = (snapshot: ConnectivitySnapshot) => void;
+
+function getNavigatorConnection(): NetworkInformationLike | null {
+  if (typeof navigator === 'undefined') return null;
+  const nav = navigator as Navigator & {
+    connection?: NetworkInformationLike;
+    mozConnection?: NetworkInformationLike;
+    webkitConnection?: NetworkInformationLike;
+  };
+  return nav.connection || nav.mozConnection || nav.webkitConnection || null;
+}
 
 export class NetworkConnectivityMonitor {
   private config: ConnectivityMonitorConfig;
@@ -60,18 +95,25 @@ export class NetworkConnectivityMonitor {
   private intervalId: number | null = null;
   private activeAbortController: AbortController | null = null;
   private activeTimeoutId: number | null = null;
+  private softRefreshTimeoutId: number | null = null;
   private isRunning = false;
   private latencyHistory: number[] = [];
   private consecutiveElevatedSamples = 0;
   private consecutiveSevereSamples = 0;
   private consecutiveGoodSamples = 0;
+  private inSoftRefreshEpisode = false;
+  private recoverySoftRefreshAttempts = 0;
+  private lastSoftRefreshEpisodeAt: number | null = null;
+  private attachedConnection: NetworkInformationLike | null = null;
 
   private snapshot: ConnectivitySnapshot = {
     status: 'unknown',
     latencyMs: null,
     consecutiveFailures: 0,
     lastCheckedAt: null,
-    isChecking: false
+    isChecking: false,
+    isSoftRefreshing: false,
+    lastSoftRefreshAt: null
   };
 
   constructor(configOverrides: Partial<ConnectivityMonitorConfig> = {}) {
@@ -90,6 +132,10 @@ export class NetworkConnectivityMonitor {
       ...this.config,
       ...configOverrides
     };
+
+    if (!this.config.enableRecoverySoftRefresh) {
+      this.resetSoftRefreshState();
+    }
 
     if (intervalChanged && this.isRunning) {
       this.restartPollingTimer();
@@ -126,6 +172,12 @@ export class NetworkConnectivityMonitor {
       document.addEventListener('visibilitychange', this.handleVisibilityChange);
     }
 
+    const conn = getNavigatorConnection();
+    if (conn && typeof conn.addEventListener === 'function') {
+      this.attachedConnection = conn;
+      conn.addEventListener('change', this.handleNetworkInfoChange);
+    }
+
     this.restartPollingTimer();
     void this.checkNow({ force: true });
   }
@@ -141,26 +193,78 @@ export class NetworkConnectivityMonitor {
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', this.handleVisibilityChange);
     }
+    if (this.attachedConnection && typeof this.attachedConnection.removeEventListener === 'function') {
+      this.attachedConnection.removeEventListener('change', this.handleNetworkInfoChange);
+      this.attachedConnection = null;
+    }
 
     this.clearPollingTimer();
+    this.resetSoftRefreshState();
     this.abortPendingRequest();
+    if (this.snapshot.isSoftRefreshing || this.snapshot.isChecking) {
+      this.setSnapshot({
+        ...this.snapshot,
+        isChecking: false,
+        isSoftRefreshing: false
+      });
+    }
   }
 
-  public async checkNow(options: { force?: boolean } = {}): Promise<ConnectivitySnapshot> {
+  private getRadioPenaltyLatency(measuredLatencyMs: number): number {
+    const conn = getNavigatorConnection();
+    if (!conn) return measuredLatencyMs;
+    if (conn.type === 'none') {
+      return Math.max(measuredLatencyMs, this.config.poorLatencyThresholdMs + 500);
+    }
+    const effective = conn.effectiveType;
+    const navRtt = typeof conn.rtt === 'number' && conn.rtt > 0 ? conn.rtt : 0;
+    const downlink = typeof conn.downlink === 'number' && conn.downlink > 0 ? conn.downlink : null;
+
+    if (effective === 'slow-2g') {
+      return Math.max(measuredLatencyMs, this.config.poorLatencyThresholdMs + 250, navRtt);
+    }
+    if (effective === '2g' || (downlink !== null && downlink < 0.25) || navRtt > 1400) {
+      return Math.max(measuredLatencyMs, this.config.stableLatencyThresholdMs + 250, navRtt);
+    }
+    if (navRtt > this.config.stableLatencyThresholdMs) {
+      return Math.max(measuredLatencyMs, navRtt);
+    }
+    return measuredLatencyMs;
+  }
+
+  private async runInternetReachabilityProbe(signal: AbortSignal): Promise<number | null> {
+    if (!this.config.internetProbeUrlResolver) return null;
+    const probeStart = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const probeUrl = this.config.internetProbeUrlResolver();
+    await fetch(probeUrl, {
+      method: 'GET',
+      mode: 'no-cors',
+      cache: 'no-store',
+      signal
+    });
+    const probeEnd = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    return Math.max(1, Math.round(probeEnd - probeStart));
+  }
+
+  public async checkNow(
+    options: { force?: boolean; isSoftRefresh?: boolean } = {}
+  ): Promise<ConnectivitySnapshot> {
     if (typeof window === 'undefined') return this.getSnapshot();
 
     const now = Date.now();
+    const isSoftRefresh = Boolean(options.isSoftRefresh);
+
     if (
       !options.force &&
+      !isSoftRefresh &&
       this.snapshot.lastCheckedAt !== null &&
       now - this.snapshot.lastCheckedAt < this.config.minCheckGapMs
     ) {
       return this.getSnapshot();
     }
 
-    // Do not rely exclusively on navigator.onLine for positive connectivity,
-    // but respect explicit OS offline state to avoid futile background requests.
-    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    const navConn = getNavigatorConnection();
+    if ((typeof navigator !== 'undefined' && navigator.onLine === false) || navConn?.type === 'none') {
       this.markOffline(now);
       return this.getSnapshot();
     }
@@ -176,7 +280,9 @@ export class NetworkConnectivityMonitor {
 
     this.setSnapshot({
       ...this.snapshot,
-      isChecking: true
+      isChecking: true,
+      isSoftRefreshing: isSoftRefresh || this.inSoftRefreshEpisode,
+      lastSoftRefreshAt: isSoftRefresh ? now : this.snapshot.lastSoftRefreshAt
     });
 
     this.activeTimeoutId = window.setTimeout(() => {
@@ -185,10 +291,13 @@ export class NetworkConnectivityMonitor {
     }, this.config.requestTimeoutMs);
 
     const startMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const hasExplicitBackend = Boolean(getBackendBaseUrl());
 
     try {
       const healthUrl = this.config.healthUrlResolver();
-      const response = await fetch(healthUrl, {
+      const sep = healthUrl.includes('?') ? '&' : '?';
+      const cacheBustedHealthUrl = `${healthUrl}${sep}_t=${Date.now()}`;
+      const response = await fetch(cacheBustedHealthUrl, {
         method: 'GET',
         cache: 'no-store',
         headers: {
@@ -197,36 +306,70 @@ export class NetworkConnectivityMonitor {
         signal: controller.signal
       });
 
-      this.clearTimeoutTimer();
-      this.activeAbortController = null;
+      const contentType = response.headers?.get?.('content-type') || '';
+      const isHtmlRewrite = contentType.toLowerCase().includes('text/html');
 
-      if (!response.ok) {
-        this.recordFailure(Date.now());
+      if (response.ok && !isHtmlRewrite) {
+        this.clearTimeoutTimer();
+        this.activeAbortController = null;
+        const endMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        const rawLatencyMs = Math.max(1, Math.round(endMs - startMs));
+        const effectiveLatencyMs = this.getRadioPenaltyLatency(rawLatencyMs);
+        this.recordSuccess(effectiveLatencyMs, Date.now(), isSoftRefresh);
         return this.getSnapshot();
       }
 
-      const endMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
-      const latencyMs = Math.max(1, Math.round(endMs - startMs));
-      this.recordSuccess(latencyMs, Date.now());
+      // If /health returned static SPA HTML or failed when no explicit backend URL is set,
+      // measure real Wi-Fi / Mobile Data internet reachability via generate_204 probe.
+      if (isHtmlRewrite || !hasExplicitBackend) {
+        const probeLatency = await this.runInternetReachabilityProbe(controller.signal);
+        this.clearTimeoutTimer();
+        this.activeAbortController = null;
+        if (probeLatency !== null) {
+          const effectiveLatencyMs = this.getRadioPenaltyLatency(probeLatency);
+          this.recordSuccess(effectiveLatencyMs, Date.now(), isSoftRefresh);
+          return this.getSnapshot();
+        }
+      }
+
+      this.clearTimeoutTimer();
+      this.activeAbortController = null;
+      this.recordFailure(Date.now(), isSoftRefresh);
       return this.getSnapshot();
     } catch {
+      if (!timedOut && !controller.signal.aborted && !hasExplicitBackend) {
+        try {
+          const probeLatency = await this.runInternetReachabilityProbe(controller.signal);
+          this.clearTimeoutTimer();
+          this.activeAbortController = null;
+          if (probeLatency !== null) {
+            const effectiveLatencyMs = this.getRadioPenaltyLatency(probeLatency);
+            this.recordSuccess(effectiveLatencyMs, Date.now(), isSoftRefresh);
+            return this.getSnapshot();
+          }
+        } catch {
+          // Fall through to failure recording
+        }
+      }
+
       this.clearTimeoutTimer();
       const abortedByStop = controller.signal.aborted && !timedOut;
       this.activeAbortController = null;
 
       if (!abortedByStop) {
-        this.recordFailure(Date.now());
+        this.recordFailure(Date.now(), isSoftRefresh);
       } else {
         this.setSnapshot({
           ...this.snapshot,
-          isChecking: false
+          isChecking: false,
+          isSoftRefreshing: false
         });
       }
       return this.getSnapshot();
     }
   }
 
-  private recordSuccess(latencyMs: number, checkedAt: number): void {
+  private recordSuccess(latencyMs: number, checkedAt: number, isSoftRefresh = false): void {
     const prevLatency =
       this.latencyHistory.length > 0
         ? this.latencyHistory[this.latencyHistory.length - 1]
@@ -294,16 +437,55 @@ export class NetworkConnectivityMonitor {
     }
     // Single temporary delay while 'stable' leaves status as 'stable' (anti-flicker hysteresis).
 
+    const transitionedPoorToUnstable = prevStatus === 'poor' && nextStatus === 'unstable';
+    let shouldScheduleSoftRefresh = false;
+
+    if (nextStatus === 'stable') {
+      // Full connectivity recovered; clear soft-refresh episode and cooldown
+      this.resetSoftRefreshState();
+      this.lastSoftRefreshEpisodeAt = null;
+    } else if (nextStatus === 'poor') {
+      this.resetSoftRefreshState();
+    } else if (this.config.enableRecoverySoftRefresh) {
+      if (transitionedPoorToUnstable) {
+        const cooldownElapsed =
+          this.lastSoftRefreshEpisodeAt === null ||
+          checkedAt - this.lastSoftRefreshEpisodeAt >= this.config.softRefreshCooldownMs;
+
+        if (cooldownElapsed) {
+          this.inSoftRefreshEpisode = true;
+          this.recoverySoftRefreshAttempts = 0;
+          this.lastSoftRefreshEpisodeAt = checkedAt;
+          shouldScheduleSoftRefresh = true;
+        }
+      } else if (
+        isSoftRefresh &&
+        this.inSoftRefreshEpisode &&
+        nextStatus === 'unstable' &&
+        this.recoverySoftRefreshAttempts < this.config.maxConsecutiveSoftRefreshes
+      ) {
+        shouldScheduleSoftRefresh = true;
+      } else if (isSoftRefresh) {
+        this.resetSoftRefreshState();
+      }
+    }
+
     this.setSnapshot({
       status: nextStatus,
       latencyMs,
       consecutiveFailures: 0,
       lastCheckedAt: checkedAt,
-      isChecking: false
+      isChecking: false,
+      isSoftRefreshing: shouldScheduleSoftRefresh && this.isRunning,
+      lastSoftRefreshAt: isSoftRefresh ? checkedAt : this.snapshot.lastSoftRefreshAt
     });
+
+    if (shouldScheduleSoftRefresh) {
+      this.scheduleRecoverySoftRefresh();
+    }
   }
 
-  private recordFailure(checkedAt: number): void {
+  private recordFailure(checkedAt: number, isSoftRefresh = false): void {
     const nextFailures = this.snapshot.consecutiveFailures + 1;
     this.consecutiveGoodSamples = 0;
     this.consecutiveElevatedSamples += 1;
@@ -326,16 +508,24 @@ export class NetworkConnectivityMonitor {
     // Single transient failure when already 'stable' (consecutiveDelaysForUnstable > 1)
     // does not immediately flip colour until repeated failure/delay confirms instability.
 
+    // Abort any ongoing soft-refresh episode cleanly upon failure
+    if (isSoftRefresh || nextStatus === 'poor') {
+      this.resetSoftRefreshState();
+    }
+
     this.setSnapshot({
       status: nextStatus,
       latencyMs: null,
       consecutiveFailures: nextFailures,
       lastCheckedAt: checkedAt,
-      isChecking: false
+      isChecking: false,
+      isSoftRefreshing: false,
+      lastSoftRefreshAt: isSoftRefresh ? checkedAt : this.snapshot.lastSoftRefreshAt
     });
   }
 
   private markOffline(now: number): void {
+    this.resetSoftRefreshState();
     this.abortPendingRequest();
     this.latencyHistory = [];
     this.consecutiveGoodSamples = 0;
@@ -350,12 +540,48 @@ export class NetworkConnectivityMonitor {
         this.config.consecutiveFailuresForPoor
       ),
       lastCheckedAt: now,
-      isChecking: false
+      isChecking: false,
+      isSoftRefreshing: false,
+      lastSoftRefreshAt: this.snapshot.lastSoftRefreshAt
     });
   }
 
+  private scheduleRecoverySoftRefresh(): void {
+    this.clearSoftRefreshTimer();
+    if (!this.isRunning || typeof window === 'undefined') return;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    if (this.recoverySoftRefreshAttempts >= this.config.maxConsecutiveSoftRefreshes) {
+      this.resetSoftRefreshState();
+      return;
+    }
+
+    const delayMs = Math.max(0, this.config.softRefreshDelayMs);
+    this.softRefreshTimeoutId = window.setTimeout(() => {
+      this.softRefreshTimeoutId = null;
+      if (!this.isRunning) return;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (this.snapshot.status !== 'unstable' || !this.inSoftRefreshEpisode) return;
+
+      this.recoverySoftRefreshAttempts += 1;
+      void this.checkNow({ force: true, isSoftRefresh: true });
+    }, delayMs);
+  }
+
+  private clearSoftRefreshTimer(): void {
+    if (this.softRefreshTimeoutId !== null && typeof window !== 'undefined') {
+      window.clearTimeout(this.softRefreshTimeoutId);
+      this.softRefreshTimeoutId = null;
+    }
+  }
+
+  private resetSoftRefreshState(): void {
+    this.clearSoftRefreshTimer();
+    this.inSoftRefreshEpisode = false;
+    this.recoverySoftRefreshAttempts = 0;
+  }
+
   private handleBrowserOnline = (): void => {
-    // Verify actual backend reachability rather than trusting navigator.onLine alone
+    // Verify actual reachability across Wi-Fi / Mobile Data rather than trusting navigator.onLine alone
     void this.checkNow({ force: true });
   };
 
@@ -363,11 +589,28 @@ export class NetworkConnectivityMonitor {
     this.markOffline(Date.now());
   };
 
+  private handleNetworkInfoChange = (): void => {
+    const conn = getNavigatorConnection();
+    if (conn?.type === 'none' || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
+      this.markOffline(Date.now());
+      return;
+    }
+    void this.checkNow({ force: true });
+  };
+
   private handleVisibilityChange = (): void => {
     if (typeof document === 'undefined') return;
     if (document.visibilityState === 'hidden') {
       this.clearPollingTimer();
+      this.resetSoftRefreshState();
       this.abortPendingRequest();
+      if (this.snapshot.isSoftRefreshing || this.snapshot.isChecking) {
+        this.setSnapshot({
+          ...this.snapshot,
+          isChecking: false,
+          isSoftRefreshing: false
+        });
+      }
     } else if (document.visibilityState === 'visible' && this.isRunning) {
       this.restartPollingTimer();
       void this.checkNow({ force: false });

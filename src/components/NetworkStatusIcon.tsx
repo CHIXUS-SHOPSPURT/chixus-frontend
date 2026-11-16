@@ -55,7 +55,7 @@ export const NetworkStatusIcon: React.FC<NetworkStatusIconProps> = ({ configOver
       role="status"
       aria-label={ariaLabel}
       aria-live="polite"
-      className="flex h-9 w-9 shrink-0 select-none items-center justify-center rounded-[10px] border border-[#2e3540] bg-[#161920] shadow-[inset_0_1px_1px_rgba(255,255,255,0.08),0_2px_6px_rgba(0,0,0,0.4)]"
+      className="flex h-9 w-9 shrink-0 select-none items-center justify-center rounded-[11px] border border-slate-300/20 bg-[#0d1119] shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_4px_12px_rgba(0,0,0,0.5)] transition-colors duration-300"
     >
       <Wifi
         aria-hidden="true"

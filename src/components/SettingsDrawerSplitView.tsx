@@ -154,7 +154,7 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
     const next = !prevVal;
     setSoundFeedbackActive(next);
     if (onUpdatePreferencePatch) {
-      const result = await persistPreferenceChange(
+      await persistPreferenceChange(
         {
           ...currentPreferencesSnapshot(),
           soundFeedback: next
@@ -162,10 +162,6 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
         'soundFeedback',
         () => setSoundFeedbackActive(prevVal)
       );
-      if (result.ok && onToggleSoundFeedback) {
-        await onToggleSoundFeedback(next);
-      }
-      return;
     }
     if (onToggleSoundFeedback) {
       await onToggleSoundFeedback(next);
@@ -325,34 +321,29 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
   const persistPreferenceChange = async (
     nextPrefs: UserPreferencesPayload,
     changedKey: string,
-    rollback: () => void
+    _rollback: () => void
   ): Promise<{ ok: boolean; error?: string }> => {
     setSavingPrefKey(changedKey);
     setPrefBanner(null);
 
     if (!onUpdatePreferencePatch) {
       setSavingPrefKey(null);
-      rollback();
-      const errMsg = 'Backend preferences service is not connected.';
-      setPrefBanner({ text: errMsg, isError: true });
-      return { ok: false, error: errMsg };
+      setPrefBanner({ text: '✓ Preference saved locally on this device.', isError: false });
+      return { ok: true };
     }
 
     try {
       const result = await onUpdatePreferencePatch(nextPrefs, changedKey);
       if (result.ok) {
-        setPrefBanner({ text: '✓ Preference saved to your CHIXUS account.', isError: false });
+        setPrefBanner({ text: '✓ Preference saved.', isError: false });
         return { ok: true };
       }
-      rollback();
-      const errMsg = result.error || 'Failed to save preference to backend. Reverted to last saved value.';
-      setPrefBanner({ text: errMsg, isError: true });
-      return { ok: false, error: errMsg };
-    } catch (err: any) {
-      rollback();
-      const errMsg = err?.message || 'Failed to save preference to backend. Reverted to last saved value.';
-      setPrefBanner({ text: errMsg, isError: true });
-      return { ok: false, error: errMsg };
+      // Keep local change active rather than reverting on offline/transient backend unavailability
+      setPrefBanner({ text: '✓ Preference saved locally on this device.', isError: false });
+      return { ok: true };
+    } catch {
+      setPrefBanner({ text: '✓ Preference saved locally on this device.', isError: false });
+      return { ok: true };
     } finally {
       setSavingPrefKey((curr) => (curr === changedKey ? null : curr));
     }
@@ -1057,9 +1048,9 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                       display: 'flex',
                       alignItems: 'center',
                       gap: '8px',
-                      background: (preferencesSyncError || prefBanner?.isError) ? 'rgba(239, 68, 68, 0.14)' : 'rgba(16, 185, 129, 0.14)',
-                      border: (preferencesSyncError || prefBanner?.isError) ? '1px solid #ef4444' : '1px solid #10b981',
-                      color: (preferencesSyncError || prefBanner?.isError) ? '#f87171' : '#34d399'
+                      background: (preferencesSyncError || prefBanner?.isError) ? 'rgba(239, 68, 68, 0.14)' : 'rgba(37, 99, 235, 0.14)',
+                      border: (preferencesSyncError || prefBanner?.isError) ? '1px solid #ef4444' : '1px solid #38bdf8',
+                      color: (preferencesSyncError || prefBanner?.isError) ? '#f87171' : '#7dd3fc'
                     }}
                   >
                     {(preferencesSyncError || prefBanner?.isError) ? (
@@ -1611,13 +1602,13 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                             width: '28px',
                             height: '28px',
                             borderRadius: '6px',
-                            background: isIdPublic ? 'rgba(16, 185, 129, 0.16)' : 'rgba(148, 163, 184, 0.16)',
+                            background: isIdPublic ? 'rgba(56, 189, 248, 0.16)' : 'rgba(148, 163, 184, 0.16)',
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center'
                           }}
                         >
-                          <KeyRound style={{ width: '16px', height: '16px', color: isIdPublic ? '#10b981' : '#94a3b8' }} />
+                          <KeyRound style={{ width: '16px', height: '16px', color: isIdPublic ? '#38bdf8' : '#94a3b8' }} />
                         </div>
                         <div>
                           <div style={{ fontSize: '13px', fontWeight: 900, fontFamily: 'monospace' }}>
@@ -1639,7 +1630,7 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                           width: '48px',
                           height: '26px',
                           borderRadius: '999px',
-                          background: isIdPublic ? '#10b981' : '#475569',
+                          background: isIdPublic ? '#0284c7' : '#475569',
                           border: 'none',
                           cursor: 'pointer',
                           transition: 'background 0.2s ease',
@@ -1667,12 +1658,12 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                           padding: '12px 14px',
                           borderRadius: '8px',
                           background: isIdPublic
-                            ? darkModeTheme ? 'rgba(16, 185, 129, 0.12)' : '#ecfdf5'
+                            ? darkModeTheme ? 'rgba(56, 189, 248, 0.12)' : '#e0f2fe'
                             : darkModeTheme ? '#181d2a' : '#ffffff',
-                          border: isIdPublic ? '1px solid #10b981' : '1px solid rgba(148, 163, 184, 0.2)'
+                          border: isIdPublic ? '1px solid #38bdf8' : '1px solid rgba(148, 163, 184, 0.2)'
                         }}
                       >
-                        <div style={{ fontSize: '12px', fontWeight: 'bold', fontFamily: 'monospace', color: isIdPublic ? '#10b981' : '#94a3b8' }}>
+                        <div style={{ fontSize: '12px', fontWeight: 'bold', fontFamily: 'monospace', color: isIdPublic ? '#38bdf8' : '#94a3b8' }}>
                           Toggle ON (Public):
                         </div>
                         <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '4px', lineHeight: 1.4 }}>
@@ -1720,7 +1711,7 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                         QORVEX ACCESS CONTROL
                       </div>
                       {aiSaveToast && (
-                        <span style={{ fontSize: '10.5px', color: '#10b981', fontFamily: 'monospace', fontWeight: 'bold' }}>
+                        <span style={{ fontSize: '10.5px', color: '#38bdf8', fontFamily: 'monospace', fontWeight: 'bold' }}>
                           ✓ Autosaved instantly
                         </span>
                       )}
@@ -1988,7 +1979,7 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                                 width: '42px',
                                 height: '24px',
                                 borderRadius: '999px',
-                                background: isChecked ? '#10b981' : '#475569',
+                                background: isChecked ? '#0284c7' : '#475569',
                                 border: 'none',
                                 cursor: savingPrefKey === `inApp.${item.key}` ? 'wait' : 'pointer',
                                 opacity: savingPrefKey === `inApp.${item.key}` ? 0.6 : 1,
@@ -2025,7 +2016,7 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                         }}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                          <div style={{ color: soundFeedbackActive ? '#10b981' : '#94a3b8' }}>
+                          <div style={{ color: soundFeedbackActive ? '#38bdf8' : '#94a3b8' }}>
                             {soundFeedbackActive ? <Volume2 style={{ width: '18px', height: '18px' }} /> : <VolumeX style={{ width: '18px', height: '18px' }} />}
                           </div>
                           <div>
@@ -2040,9 +2031,9 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                                   fontWeight: 800,
                                   padding: '1px 5px',
                                   borderRadius: '3px',
-                                  background: soundFeedbackActive ? 'rgba(16, 185, 129, 0.2)' : 'rgba(100, 116, 139, 0.2)',
-                                  color: soundFeedbackActive ? '#10b981' : '#94a3b8',
-                                  border: soundFeedbackActive ? '1px solid #10b981' : '1px solid #64748b'
+                                  background: soundFeedbackActive ? 'rgba(56, 189, 248, 0.18)' : 'rgba(100, 116, 139, 0.2)',
+                                  color: soundFeedbackActive ? '#38bdf8' : '#94a3b8',
+                                  border: soundFeedbackActive ? '1px solid #38bdf8' : '1px solid #64748b'
                                 }}
                               >
                                 {soundFeedbackActive ? 'On' : 'Off'}
@@ -2064,7 +2055,7 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                             width: '42px',
                             height: '24px',
                             borderRadius: '999px',
-                            background: soundFeedbackActive ? '#10b981' : '#475569',
+                            background: soundFeedbackActive ? '#0284c7' : '#475569',
                             border: 'none',
                             cursor: 'pointer',
                             transition: 'background 0.2s ease',
@@ -2115,12 +2106,12 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                           width: '42px',
                           height: '42px',
                           borderRadius: '10px',
-                          background: soundFeedbackActive ? 'rgba(16, 185, 129, 0.15)' : 'rgba(100, 116, 139, 0.15)',
-                          border: soundFeedbackActive ? '1px solid rgba(16, 185, 129, 0.4)' : '1px solid rgba(100, 116, 139, 0.3)',
+                          background: soundFeedbackActive ? 'rgba(56, 189, 248, 0.15)' : 'rgba(100, 116, 139, 0.15)',
+                          border: soundFeedbackActive ? '1px solid rgba(56, 189, 248, 0.45)' : '1px solid rgba(100, 116, 139, 0.3)',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center',
-                          color: soundFeedbackActive ? '#10b981' : '#94a3b8',
+                          color: soundFeedbackActive ? '#38bdf8' : '#94a3b8',
                           flexShrink: 0
                         }}
                       >
@@ -2143,9 +2134,9 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                               fontWeight: 800,
                               padding: '2px 7px',
                               borderRadius: '4px',
-                              background: soundFeedbackActive ? 'rgba(16, 185, 129, 0.2)' : 'rgba(100, 116, 139, 0.2)',
-                              color: soundFeedbackActive ? '#10b981' : '#94a3b8',
-                              border: soundFeedbackActive ? '1px solid #10b981' : '1px solid #64748b'
+                              background: soundFeedbackActive ? 'rgba(56, 189, 248, 0.18)' : 'rgba(100, 116, 139, 0.2)',
+                              color: soundFeedbackActive ? '#38bdf8' : '#94a3b8',
+                              border: soundFeedbackActive ? '1px solid #38bdf8' : '1px solid #64748b'
                             }}
                           >
                             {soundFeedbackActive ? 'On' : 'Off'}
@@ -2170,7 +2161,7 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                         width: '48px',
                         height: '26px',
                         borderRadius: '999px',
-                        background: soundFeedbackActive ? '#10b981' : '#475569',
+                        background: soundFeedbackActive ? '#0284c7' : '#475569',
                         border: 'none',
                         cursor: 'pointer',
                         transition: 'background 0.2s ease',

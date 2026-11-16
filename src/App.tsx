@@ -60,11 +60,14 @@ import {
   Settings,
   Radio,
   ShieldAlert,
+  ShieldCheck,
+  Loader2,
   Video
 } from 'lucide-react';
 import SettingsDrawerSplitView from './components/SettingsDrawerSplitView';
 import HelpCenterDrawerSplitView from './components/HelpCenterDrawerSplitView';
 import NetworkStatusIcon from './components/NetworkStatusIcon';
+import { OnboardingWelcomeScreen } from './components/OnboardingWelcomeScreen';
 import { sharedNetworkConnectivityMonitor } from './services/networkConnectivityService';
 import {
   CHIXUS_PRIVACY_POLICY,
@@ -99,6 +102,7 @@ import {
   fetchAuthenticatedAccount,
   fetchUserPreferences,
   generateNonPhoneChixusId,
+  isHardcodedTestIdentifier,
   loginWithIdentifier,
   logoutSession,
   normalizeAccountProfile,
@@ -127,6 +131,8 @@ import {
   type ChixusLiveAppContext,
   cleanAiMessageText
 } from './chixusAiandVoice';
+
+const QORVEX_COVER_IMAGE = '/assets/aistudio/file_00000000bda48246b7e0c341de9bfaaf_b886482d.png';
 
 // ============================================================================
 // STANDALONE REGIONAL MATRIX & GEOGRAPHIC LOOKUP DEFINITIONS
@@ -1316,11 +1322,34 @@ const validateLegalFullName = (name: string): boolean => {
 // ==========================================
 // 3. MAIN APPLICATION COMPONENT
 // ==========================================
+// Validate persisted session token before routing returning users straight into main_app
+function hasValidStoredAuthToken(): boolean {
+  const token = getAuthToken().trim();
+  if (!token) return false;
+  const parts = token.split('.');
+  if (parts.length === 3) {
+    try {
+      const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      const padded = base64.padEnd(base64.length + ((4 - (base64.length % 4)) % 4), '=');
+      const payload = JSON.parse(atob(padded));
+      if (typeof payload?.exp === 'number' && payload.exp * 1000 <= Date.now()) {
+        clearAuthToken();
+        return false;
+      }
+    } catch {
+      // Non-JSON or opaque token formats still remain valid until backend rejects with 401
+    }
+  }
+  return true;
+}
+
 export function App() {
   // Onboarding Gateway State: 'splash' | 'login' | 'caution' | 'registration' | 'main_app'
-  // Explicitly log out any previously created/cached account so everything starts fresh from backend auth
   const [onboardStage, setOnboardStage] = useState<'splash' | 'login' | 'caution' | 'registration' | 'main_app'>(() => {
     try {
+      const hasVerifyAction =
+        typeof window !== 'undefined' &&
+        new URLSearchParams(window.location.search).has('verify');
       const resetKey = 'chixus_fresh_backend_reset_2026_11_v2';
       if (!localStorage.getItem(resetKey)) {
         localStorage.setItem(resetKey, 'true');
@@ -1332,30 +1361,48 @@ export function App() {
         localStorage.removeItem('chixus_user_location_v7');
         localStorage.removeItem('chixus_headline_v7');
         localStorage.setItem('chixus_explicit_logout_v1', 'true');
-        localStorage.setItem('chixus_onboard_stage_v1', 'login');
-        return 'login';
+        const initialResetStage = hasVerifyAction ? 'login' : 'splash';
+        localStorage.setItem('chixus_onboard_stage_v1', initialResetStage);
+        return initialResetStage;
       }
-      const hasValidSessionToken = Boolean(getAuthToken());
-      if (!hasValidSessionToken) {
-        localStorage.setItem('chixus_explicit_logout_v1', 'true');
-        localStorage.setItem('chixus_onboard_stage_v1', 'login');
-        return 'login';
-      }
+
+      const hasValidSessionToken = hasValidStoredAuthToken();
       const isExplicitlyLoggedOut = localStorage.getItem('chixus_explicit_logout_v1') === 'true';
       const savedStage = localStorage.getItem('chixus_onboard_stage_v1');
       const savedProfile = localStorage.getItem('chixus_current_user_profile');
       const savedSecretId = localStorage.getItem('chixus_generated_secret_id');
-      if (!isExplicitlyLoggedOut && (savedStage === 'main_app' || (savedProfile && savedSecretId))) {
-        return 'main_app';
+      const hasAcceptedTerms = localStorage.getItem('chixus_terms_accepted_v1') === 'true';
+
+      // Returning user with valid authentication: route straight to 'main_app' without triggering splash again
+      if (hasValidSessionToken && !isExplicitlyLoggedOut) {
+        if (savedStage === 'registration' && !hasAcceptedTerms && !savedSecretId) {
+          return 'registration';
+        }
+        if (savedStage === 'main_app' || (savedProfile && savedSecretId) || hasValidSessionToken) {
+          localStorage.setItem('chixus_onboard_stage_v1', 'main_app');
+          localStorage.setItem('chixus_onboarding_completed_v1', 'true');
+          return 'main_app';
+        }
       }
-      if (savedStage === 'caution' || savedStage === 'registration') {
-        return 'registration';
+
+      if (!hasValidSessionToken) {
+        clearAuthToken();
+        localStorage.setItem('chixus_explicit_logout_v1', 'true');
       }
-      if (savedStage === 'login') {
+
+      if (hasVerifyAction) {
+        localStorage.setItem('chixus_onboard_stage_v1', 'login');
         return 'login';
       }
+      if (savedStage === 'caution' || savedStage === 'registration') {
+        localStorage.setItem('chixus_onboard_stage_v1', 'registration');
+        return 'registration';
+      }
+
+      localStorage.setItem('chixus_onboard_stage_v1', 'splash');
+      return 'splash';
     } catch {}
-    return 'login';
+    return 'splash';
   });
 
   // Persist onboarding/session stage across refreshes
@@ -1365,11 +1412,10 @@ export function App() {
         setOnboardStage('registration');
         return;
       }
-      if (onboardStage !== 'splash') {
-        localStorage.setItem('chixus_onboard_stage_v1', onboardStage);
-      }
+      localStorage.setItem('chixus_onboard_stage_v1', onboardStage);
       if (onboardStage === 'main_app') {
         localStorage.removeItem('chixus_explicit_logout_v1');
+        localStorage.setItem('chixus_onboarding_completed_v1', 'true');
       }
     } catch {}
   }, [onboardStage]);
@@ -1593,33 +1639,7 @@ export function App() {
     chixusId?: string;
   } | null>(null);
 
-  // Splash & Initialization Timers
-  const [splashProgress, setSplashProgress] = useState<number>(0);
-  const [initProgress, setInitProgress] = useState<number>(0);
 
-  // Splash Stage Timer: 3000ms auto-transition to 'login'
-  useEffect(() => {
-    if (onboardStage === 'splash') {
-      const interval = setInterval(() => {
-        setSplashProgress((prev) => {
-          if (prev >= 100) {
-            clearInterval(interval);
-            return 100;
-          }
-          return prev + 5;
-        });
-      }, 150);
-
-      const timer = setTimeout(() => {
-        setOnboardStage('login');
-      }, 3000);
-
-      return () => {
-        clearInterval(interval);
-        clearTimeout(timer);
-      };
-    }
-  }, [onboardStage]);
 
   // Navigation Tabs: 'feed' | 'inspect' | 'metrics' | 'messages' | 'search' | 'settings'
   const [activeTab, setActiveTab] = useState<'feed' | 'inspect' | 'metrics' | 'messages' | 'search' | 'settings'>(() => {
@@ -1645,7 +1665,7 @@ export function App() {
 
     if (onboardStage !== 'main_app') {
       routePath = `/${onboardStage}`;
-      if (onboardStage === 'splash') routeTitle = 'CHIXUS — Initializing System Core';
+      if (onboardStage === 'splash') routeTitle = 'CHIXUS — AI-Powered Technical Inspection';
       else if (onboardStage === 'login') routeTitle = 'CHIXUS — Node Authentication';
       else if (onboardStage === 'caution') routeTitle = 'CHIXUS — Zero-Energy Safety Protocol';
       else if (onboardStage === 'registration') routeTitle = 'CHIXUS — Operator Registration';
@@ -1722,6 +1742,12 @@ export function App() {
   const [shareRecipientInput, setShareRecipientInput] = useState<string>('');
   const [nowTick, setNowTick] = useState<number>(() => Date.now());
   const [selectedPeerProfile, setSelectedPeerProfile] = useState<any | null>(null);
+  const peerProfileRequestSeqRef = useRef<number>(0);
+  const closePeerProfile = () => {
+    peerProfileRequestSeqRef.current += 1;
+    setSelectedPeerProfile(null);
+    setIsPeerProfileLoading(false);
+  };
   const [peerDossierActiveTab, setPeerDossierActiveTab] = useState<'dossier' | 'message'>('dossier');
   const [peerDossierQuickMsgInput, setPeerDossierQuickMsgInput] = useState<string>('');
   const [toastFeedback, setToastFeedback] = useState<string | null>(null);
@@ -1897,62 +1923,50 @@ export function App() {
     nextPrefs: UserPreferencesPayload,
     _changedKey: string
   ): Promise<{ ok: boolean; error?: string }> => {
-    if (!getAuthToken()) {
-      const msg = 'Authenticated session required. Please log in again to save settings.';
-      setPreferencesSyncError(msg);
-      sound.playError();
-      triggerToast(`❌ ${msg}`, { kind: 'critical' });
-      return { ok: false, error: msg };
+    // Always apply & persist locally first so Display, Languages, Accessibility, and Sound never fail offline
+    applyPreferencesLocally(nextPrefs);
+    setPreferencesSyncError(null);
+
+    if (getAuthToken()) {
+      // Best-effort silent background sync to backend when reachable
+      void saveUserPreferences(nextPrefs)
+        .then((confirmed) => {
+          applyPreferencesLocally(confirmed);
+        })
+        .catch(() => {
+          // Silently retain local preference without reverting or showing Failed to fetch
+        });
     }
 
-    setPreferencesSyncError(null);
-    try {
-      const confirmed = await saveUserPreferences(nextPrefs);
-      applyPreferencesLocally(confirmed);
-      return { ok: true };
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Unable to save preference to backend.';
-      setPreferencesSyncError(msg);
-      sound.playError();
-      triggerToast(`❌ Setting not saved: ${msg}`, { kind: 'critical' });
-      return { ok: false, error: msg };
-    }
+    return { ok: true };
   };
 
   const handleToggleSoundFeedback = async (forcedState?: boolean): Promise<boolean> => {
     const prev = soundFeedbackEnabled;
     const next = forcedState !== undefined ? forcedState : !prev;
 
-    if (getAuthToken() && onboardStage === 'main_app') {
-      const result = await handleUpdatePreferencePatch(
-        {
-          ...userPreferencesRef.current,
-          soundFeedback: next
-        },
-        'soundFeedback'
-      );
-      if (!result.ok) {
-        return false;
-      }
-      if (next) {
-        sound.playSuccess();
-        triggerToast('🔊 Sound feedback enabled (On).');
-      } else {
-        triggerToast('🔇 Sound feedback muted (Off).');
-      }
-      return true;
-    }
-
+    const nextPrefs: UserPreferencesPayload = {
+      ...userPreferencesRef.current,
+      soundFeedback: next
+    };
+    applyPreferencesLocally(nextPrefs);
     setSoundFeedbackEnabled(next);
     globalSoundFeedbackMuted = !next;
     try {
       localStorage.setItem('chixus_sound_feedback_enabled_v1', next ? 'true' : 'false');
     } catch {}
+
     if (next) {
       sound.playSuccess();
       triggerToast('🔊 Sound feedback enabled (On).');
     } else {
       triggerToast('🔇 Sound feedback muted (Off).');
+    }
+
+    if (getAuthToken() && onboardStage === 'main_app') {
+      void saveUserPreferences(nextPrefs)
+        .then((confirmed) => applyPreferencesLocally(confirmed))
+        .catch(() => {});
     }
     return true;
   };
@@ -2651,9 +2665,10 @@ export function App() {
               }
               sound.playSuccess();
               try {
-                safeSetLocalStorage('chixus_terms_accepted_v1', 'true');
+                localStorage.setItem('chixus_terms_accepted_v1', 'true');
                 localStorage.removeItem('chixus_explicit_logout_v1');
-                safeSetLocalStorage('chixus_onboard_stage_v1', 'main_app');
+                localStorage.setItem('chixus_onboard_stage_v1', 'main_app');
+                localStorage.setItem('chixus_onboarding_completed_v1', 'true');
               } catch {}
               setShowTermsAgreementModal(false);
               setOnboardStage('main_app');
@@ -3183,7 +3198,12 @@ export function App() {
             const uRes = await fetch(`${API_BASE_URL}/api/admin/sql?key=chixus_admin_2026&query=${encodeURIComponent(uSql)}`);
             const uData = await uRes.json().catch(() => null);
             if (uData?.status === 'success' && Array.isArray(uData.data) && uData.data.length > 0) {
-              sqlUserRow = uData.data[0];
+              sqlUserRow =
+                uData.data.find(
+                  (r: any) =>
+                    String(r?.id || '').trim().toUpperCase() === activeId ||
+                    String(r?.username || '').trim().toUpperCase() === activeId
+                ) || null;
             }
           } catch {}
 
@@ -3764,8 +3784,18 @@ export function App() {
             if (id) allPeerIds.add(id);
           }
         }
-        Object.keys(idbLiveDir).forEach((k) => allPeerIds.add(k.trim().toUpperCase()));
-        Object.keys(lsLiveDir).forEach((k) => allPeerIds.add(k.trim().toUpperCase()));
+        Object.keys(idbLiveDir).forEach((k) => {
+          const cleanK = k.trim();
+          if (cleanK && !cleanK.toLowerCase().startsWith('name:')) {
+            allPeerIds.add(cleanK.toUpperCase());
+          }
+        });
+        Object.keys(lsLiveDir).forEach((k) => {
+          const cleanK = k.trim();
+          if (cleanK && !cleanK.toLowerCase().startsWith('name:')) {
+            allPeerIds.add(cleanK.toUpperCase());
+          }
+        });
 
         for (const uId of Array.from(allPeerIds)) {
           if (!uId || uId === activeId) continue;
@@ -3780,10 +3810,7 @@ export function App() {
           } catch {}
 
           const idbAv = await localforage.getItem<string>(`chixus_idb_avatar_v2_${uId}`).catch(() => null);
-          const isChinazaRow =
-            uId === 'CHI-7649-NG' ||
-            uId === 'CHI-4591-NG' ||
-            String(uRow?.full_name || regAcc?.fullName || '').toLowerCase().includes('chinaza');
+          const isChinazaRow = uId === 'CHI-7649-NG' || uId === 'CHI-4591-NG';
           const chinazaIdbAv = isChinazaRow
             ? (await localforage.getItem<string>('chixus_idb_avatar_v2_CHI-7649-NG').catch(() => null)) ||
               (await localforage.getItem<string>('chixus_idb_avatar_v2_CHI-4591-NG').catch(() => null)) ||
@@ -3965,24 +3992,33 @@ export function App() {
             return changed ? deduplicateContactsList(next) : prev;
           });
 
-          // Live-update selectedPeerProfile modal if currently open for this operator
+          // Live-update selectedPeerProfile modal ONLY for the exact currently opened operator (never switch to another user)
           setSelectedPeerProfile((prev: any) => {
             if (!prev || prev.name === 'Qorvex' || prev.name === 'Qordex' || prev.name === 'CHIXUS AI' || prev.operator_id === 'CHI-AI01-BOT') return prev;
             const opId = String(prev.operator_id || '').trim().toUpperCase();
             if (opId && opId === activeId) return prev;
-            const liveMatch = (opId && liveById[opId]) || liveByName[String(prev.name || '').trim().toLowerCase()];
+            const prevNameLower = String(prev.name || '').trim().toLowerCase();
+            const liveMatch = opId ? liveById[opId] : liveByName[prevNameLower];
+            if (!liveMatch) return prev;
+            if (opId && liveMatch.id && liveMatch.id.toUpperCase() !== opId) return prev;
             if (
-              liveMatch &&
-              (prev.avatar !== liveMatch.avatar ||
-                prev.name !== liveMatch.name ||
-                prev.headline !== liveMatch.headline ||
-                prev.location !== liveMatch.location ||
-                prev.summary !== liveMatch.summary ||
-                (liveMatch.experiences?.length || 0) !== (prev.experiences?.length || 0))
+              prevNameLower &&
+              prevNameLower !== 'operator' &&
+              !/^chi-[a-z0-9]{4}-[a-z]{2,3}$/i.test(prevNameLower) &&
+              liveMatch.name &&
+              liveMatch.name.trim().toLowerCase() !== prevNameLower
+            ) {
+              return prev;
+            }
+            if (
+              prev.avatar !== liveMatch.avatar ||
+              prev.headline !== liveMatch.headline ||
+              prev.location !== liveMatch.location ||
+              prev.summary !== liveMatch.summary ||
+              (liveMatch.experiences?.length || 0) !== (prev.experiences?.length || 0)
             ) {
               return {
                 ...prev,
-                name: liveMatch.name,
                 avatar: liveMatch.avatar,
                 headline: liveMatch.headline || prev.headline,
                 badge: liveMatch.headline || prev.badge,
@@ -4336,6 +4372,9 @@ export function App() {
     return [];
   });
   const [isChixusAiTyping, setIsChixusAiTyping] = useState<boolean>(false);
+  const [qorvexThinkingSteps, setQorvexThinkingSteps] = useState<
+    Array<{ id: string; label: string; detail: string; status: 'done' | 'active' | 'pending' }>
+  >([]);
   const [postEducations, setPostEducations] = useState<Record<string, string>>({});
   const [expandedPostEducations, setExpandedPostEducations] = useState<Record<string, boolean>>({});
   const [loadingPostEducation, setLoadingPostEducation] = useState<Record<string, boolean>>({});
@@ -4427,6 +4466,8 @@ export function App() {
   const [holdingPostProgress, setHoldingPostProgress] = useState<number>(0);
   const [contextMenuPost, setContextMenuPost] = useState<PostItem | null>(null);
   const [confirmDeletePost, setConfirmDeletePost] = useState<boolean>(false);
+  const [editingPostTarget, setEditingPostTarget] = useState<PostItem | null>(null);
+  const [editingPostContent, setEditingPostContent] = useState<string>('');
   const postHoldTimerRef = useRef<number | null>(null);
   const postHoldIntervalRef = useRef<number | null>(null);
   const postHoldStartTimeRef = useRef<number>(0);
@@ -5475,7 +5516,7 @@ export function App() {
       setNodeSearchInput('');
       setNodeSearchResult(null);
       setNodeSearchError(null);
-      setSelectedPeerProfile(null);
+      closePeerProfile();
       setContacts([defaultChixusBotContact]);
       setActiveContactId(CHIXUS_AI_BOT_ID);
       setIsChatOpen(false);
@@ -5670,7 +5711,7 @@ export function App() {
     setNodeSearchInput('');
     setNodeSearchResult(null);
     setNodeSearchError(null);
-    setSelectedPeerProfile(null);
+    closePeerProfile();
     setGeneratedSecretID(cleanId);
     if (profileData) {
       const syncedProfile = {
@@ -5822,12 +5863,11 @@ export function App() {
     const cleanTargetId = (targetOperatorId || '').trim().toUpperCase();
     const cleanTargetName = (targetName || '').trim().toLowerCase();
 
-    // Determine if this operator is Chinaza Joseph's node
+    // Determine if this operator is strictly Chinaza Joseph's legacy node (never hijack a distinct node ID)
     const isChinazaTarget =
       cleanTargetId === 'CHI-7649-NG' ||
       cleanTargetId === 'CHI-4591-NG' ||
-      cleanTargetName === 'chinaza joseph' ||
-      cleanTargetName === 'chinaza success joseph';
+      (!cleanTargetId && (cleanTargetName === 'chinaza joseph' || cleanTargetName === 'chinaza success joseph'));
 
     let matchedReg: any = null;
     try {
@@ -5846,25 +5886,33 @@ export function App() {
       }
     } catch {}
 
-    // Also query Backend SQLite users table FIRST so we get the exact ID and stored avatar/details
+    // Query Backend SQLite users table AND strictly verify the returned row matches the requested ID or name
     let sqlRow: any = null;
     try {
-      const whereClause = cleanTargetId
-        ? `TRIM(UPPER(id))=UPPER('${cleanTargetId.replace(/'/g, "''")}') OR TRIM(UPPER(username))=UPPER('${cleanTargetId.replace(/'/g, "''")}')`
-        : `LOWER(TRIM(full_name))=LOWER('${cleanTargetName.replace(/'/g, "''")}')`;
-      const sqlQuery = `SELECT * FROM users WHERE ${whereClause} LIMIT 1`;
-      const sqlRes = await fetch(`${API_BASE_URL}/api/admin/sql?key=chixus_admin_2026&query=${encodeURIComponent(sqlQuery)}`);
-      const sqlData = await sqlRes.json().catch(() => null);
-      if (sqlRes.ok && sqlData && sqlData.status === 'success' && Array.isArray(sqlData.data) && sqlData.data.length > 0) {
-        sqlRow = sqlData.data[0];
+      if (cleanTargetId || cleanTargetName) {
+        const whereClause = cleanTargetId
+          ? `TRIM(UPPER(id))=UPPER('${cleanTargetId.replace(/'/g, "''")}') OR TRIM(UPPER(username))=UPPER('${cleanTargetId.replace(/'/g, "''")}')`
+          : `LOWER(TRIM(full_name))=LOWER('${cleanTargetName.replace(/'/g, "''")}')`;
+        const sqlQuery = `SELECT * FROM users WHERE ${whereClause} LIMIT 1`;
+        const sqlRes = await fetch(`${API_BASE_URL}/api/admin/sql?key=chixus_admin_2026&query=${encodeURIComponent(sqlQuery)}`);
+        const sqlData = await sqlRes.json().catch(() => null);
+        if (sqlRes.ok && sqlData && sqlData.status === 'success' && Array.isArray(sqlData.data) && sqlData.data.length > 0) {
+          sqlRow =
+            sqlData.data.find((row: any) => {
+              const rId = String(row?.id || '').trim().toUpperCase();
+              const rUser = String(row?.username || '').trim().toUpperCase();
+              const rName = String(row?.full_name || row?.name || '').trim().toLowerCase();
+              if (cleanTargetId) return rId === cleanTargetId || rUser === cleanTargetId;
+              return Boolean(cleanTargetName && rName === cleanTargetName);
+            }) || null;
+        }
       }
     } catch {}
 
     const idbLiveDir = (await localforage.getItem<Record<string, any>>('chixus_idb_live_operator_avatars_v3').catch(() => null)) || {};
-    const liveDirEntry =
-      (cleanTargetId && idbLiveDir[cleanTargetId]) ||
-      (cleanTargetName && idbLiveDir[`name:${cleanTargetName}`]) ||
-      null;
+    const liveDirEntry = cleanTargetId
+      ? idbLiveDir[cleanTargetId] || null
+      : (cleanTargetName && idbLiveDir[`name:${cleanTargetName}`]) || null;
 
     const resolvedId =
       cleanTargetId ||
@@ -5930,7 +5978,9 @@ export function App() {
     if (!bestAvatar) {
       const postAv = posts.find((p) => {
         const pId = (p.authorId || '').trim().toUpperCase();
-        if (resolvedId && pId === resolvedId && isRealCustomAvatar(p.avatar)) return true;
+        if (resolvedId) {
+          return pId === resolvedId && isRealCustomAvatar(p.avatar);
+        }
         if (cleanTargetName && (p.author || '').trim().toLowerCase() === cleanTargetName && isRealCustomAvatar(p.avatar)) return true;
         return false;
       })?.avatar;
@@ -6103,7 +6153,7 @@ export function App() {
         location: 'Sovereign Neural Core // Global Mesh',
         headline: 'Your All-in-One Intelligent Assistant for Instant Answers, Visual Diagnostics, Post Education & Everyday Problem Solving',
         summary: 'Your 24/7 intelligent assistant designed to give you clear, instant, and practical answers on any topic. Ask me anything—from everyday questions, science, math, coding, and business strategy to live PCB & hardware fault analysis, step-by-step repair guidance, image inspection, and spoken explanations of any Feed post. Tap Message anytime for immediate support.',
-        cover: metallicBanner,
+        cover: QORVEX_COVER_IMAGE,
         company: '',
         isConnected: true
       };
@@ -6136,18 +6186,20 @@ export function App() {
   // Handler to open interactive profile for ANY person (with skeleton screen loading & strict per-account resolution)
   const openPeerProfile = async (authorName: string, targetOperatorId?: string, initialTab: 'dossier' | 'message' = 'dossier') => {
     sound.playClick();
+    const reqSeq = ++peerProfileRequestSeqRef.current;
     setIsPeerProfileLoading(true);
     setPeerDossierActiveTab(initialTab);
     setPeerDossierQuickMsgInput('');
 
     const myActiveId = getMyActiveNodeId();
     let cleanTargetId = (targetOperatorId || '').trim().toUpperCase();
+    const cleanAuthorName = (authorName || '').trim();
+    const lowerAuth = cleanAuthorName.toLowerCase();
 
-    // If cleanTargetId was not passed, try to infer it from nodeSearchResult, incomingConnectionRequests, notifications, posts, or registered users
-    if (!cleanTargetId && authorName) {
-      const lowerAuth = authorName.trim().toLowerCase();
-      if (/^CHI-[A-Z0-9]{4}-[A-Z]{2,3}$/i.test(authorName.trim())) {
-        cleanTargetId = authorName.trim().toUpperCase();
+    // If cleanTargetId was not passed, infer carefully from matching records
+    if (!cleanTargetId && cleanAuthorName) {
+      if (/^CHI-[A-Z0-9]{4}-[A-Z]{2,3}$/i.test(cleanAuthorName)) {
+        cleanTargetId = cleanAuthorName.toUpperCase();
       }
       if (!cleanTargetId && nodeSearchResult && nodeSearchResult.name.trim().toLowerCase() === lowerAuth && nodeSearchResult.operator_id) {
         cleanTargetId = nodeSearchResult.operator_id.trim().toUpperCase();
@@ -6170,18 +6222,13 @@ export function App() {
           cleanTargetId = postMatch.authorId.trim().toUpperCase();
         }
       }
-      if (!cleanTargetId) {
+      if (!cleanTargetId && !isAuthorCurrentUser(cleanAuthorName)) {
         try {
           const regRaw = localStorage.getItem('chixus_registered_users');
           if (regRaw) {
             const regList = JSON.parse(regRaw);
             if (Array.isArray(regList)) {
-              const otherMatch = regList.find(
-                (u: any) =>
-                  String(u?.fullName || u?.full_name || '').trim().toLowerCase() === lowerAuth &&
-                  String(u?.secretId || '').trim().toUpperCase() !== myActiveId
-              );
-              const anyMatch = otherMatch || regList.find(
+              const anyMatch = regList.find(
                 (u: any) => String(u?.fullName || u?.full_name || '').trim().toLowerCase() === lowerAuth
               );
               if (anyMatch?.secretId) {
@@ -6191,7 +6238,7 @@ export function App() {
           }
         } catch {}
       }
-      if (!cleanTargetId && lowerAuth.includes('chinaza')) {
+      if (!cleanTargetId && (lowerAuth === 'chinaza joseph' || lowerAuth === 'chinaza success joseph')) {
         cleanTargetId = 'CHI-7649-NG';
       }
     }
@@ -6199,7 +6246,7 @@ export function App() {
     // Strictly verify whether the requested dossier belongs to the currently logged-in account
     const isCurrentActiveAccount = cleanTargetId
       ? Boolean(myActiveId && cleanTargetId === myActiveId)
-      : isAuthorCurrentUser(authorName, cleanTargetId);
+      : isAuthorCurrentUser(cleanAuthorName, cleanTargetId);
 
     if (isCurrentActiveAccount) {
       setSelectedPeerProfile({
@@ -6218,12 +6265,14 @@ export function App() {
         operator_id: myActiveId
       });
       setTimeout(() => {
-        setIsPeerProfileLoading(false);
+        if (peerProfileRequestSeqRef.current === reqSeq) {
+          setIsPeerProfileLoading(false);
+        }
       }, 220);
       return;
     }
 
-    if (authorName === 'Qorvex' || authorName === 'Qordex' || authorName === 'CHIXUS AI' || authorName === CHIXUS_AI_BOT_ID || cleanTargetId === 'CHI-AI01-BOT') {
+    if (cleanAuthorName === 'Qorvex' || cleanAuthorName === 'Qordex' || cleanAuthorName === 'CHIXUS AI' || cleanAuthorName === CHIXUS_AI_BOT_ID || cleanTargetId === 'CHI-AI01-BOT') {
       setSelectedPeerProfile({
         name: 'Qorvex',
         avatar: CHIXUS_AI_BOT_AVATAR,
@@ -6233,7 +6282,7 @@ export function App() {
         location: 'Sovereign Neural Core // Global Mesh',
         headline: 'Your All-in-One Intelligent Assistant for Instant Answers, Visual Diagnostics, Post Education & Everyday Problem Solving',
         summary: 'Your 24/7 intelligent assistant designed to give you clear, instant, and practical answers on any topic. Ask me anything—from everyday questions, science, math, coding, and business strategy to live PCB & hardware fault analysis, step-by-step repair guidance, image inspection, and spoken explanations of any Feed post. Tap Message anytime for immediate support.',
-        cover: metallicBanner,
+        cover: QORVEX_COVER_IMAGE,
         company: '',
         experiences: [
           {
@@ -6246,22 +6295,24 @@ export function App() {
         operator_id: 'CHI-AI01-BOT'
       });
       setTimeout(() => {
-        setIsPeerProfileLoading(false);
+        if (peerProfileRequestSeqRef.current === reqSeq) {
+          setIsPeerProfileLoading(false);
+        }
       }, 220);
       return;
     }
 
-    const peer = peerProfiles[authorName];
+    const peer = peerProfiles[cleanAuthorName];
     const matchedFromSearch =
       nodeSearchResult &&
       ((cleanTargetId && (nodeSearchResult.operator_id || '').toUpperCase() === cleanTargetId) ||
-        nodeSearchResult.name.toLowerCase() === authorName.toLowerCase())
+        (!cleanTargetId && nodeSearchResult.name.toLowerCase() === lowerAuth))
         ? nodeSearchResult
         : null;
     const matchedFromReq = incomingConnectionRequests.find(
       (r) =>
         (cleanTargetId && (r.username || '').toUpperCase() === cleanTargetId) ||
-        r.name.toLowerCase() === authorName.toLowerCase()
+        (!cleanTargetId && r.name.toLowerCase() === lowerAuth)
     );
 
     const initialTargetId =
@@ -6270,7 +6321,7 @@ export function App() {
     const isTargetChinaza =
       initialTargetId === 'CHI-7649-NG' ||
       initialTargetId === 'CHI-4591-NG' ||
-      authorName.toLowerCase().includes('chinaza');
+      (!initialTargetId && (lowerAuth === 'chinaza joseph' || lowerAuth === 'chinaza success joseph'));
 
     const initialAv = isRealCustomAvatar(matchedFromSearch?.avatar)
       ? matchedFromSearch!.avatar
@@ -6284,7 +6335,7 @@ export function App() {
 
     // Set initial preview while resolving full stored/backend details
     const initialProfileData = {
-      name: matchedFromSearch?.name || matchedFromReq?.name || authorName,
+      name: matchedFromSearch?.name || matchedFromReq?.name || cleanAuthorName || initialTargetId,
       badge: peer?.badge || peer?.headline || matchedFromSearch?.headline || matchedFromReq?.role || '',
       avatar: initialAv,
       inspectionsConducted: peer ? formatNumber(peer.inspectionsConducted) : '0',
@@ -6301,58 +6352,78 @@ export function App() {
     setSelectedPeerProfile(initialProfileData);
 
     try {
-      const resolved = await resolveStoredOperatorByNodeOrName(authorName, initialTargetId);
+      const resolved = await resolveStoredOperatorByNodeOrName(cleanAuthorName, initialTargetId);
+      if (peerProfileRequestSeqRef.current !== reqSeq) return;
       if (resolved) {
-        const resolvedAv = isRealCustomAvatar(resolved.avatar) ? resolved.avatar : initialAv;
-        const resolvedExperiences =
-          Array.isArray(resolved.experiences) && resolved.experiences.length > 0
-            ? resolved.experiences
-            : peer?.experiences || [];
-        const fullProfileData = {
-          name: resolved.name,
-          badge: resolved.headline || initialProfileData.badge,
-          avatar: resolvedAv,
-          inspectionsConducted: formatNumber(resolved.inspectionsConducted),
-          faultsIsolated: formatNumber(resolved.faultsIsolated),
-          aiScanAccuracy: resolved.aiScanAccuracy,
-          location: resolved.location,
-          headline: resolved.headline,
-          summary: resolved.summary,
-          cover: resolved.cover,
-          company: '',
-          experiences: resolvedExperiences,
-          operator_id: resolved.id || initialTargetId
-        };
-        setSelectedPeerProfile(fullProfileData);
-        setPeerProfiles((prev) => ({
-          ...prev,
-          [resolved.name]: {
-            ...(prev[resolved.name] || {}),
-            id: resolved.id || initialTargetId || `peer-${Date.now()}`,
-            verifiedId: resolved.id || initialTargetId,
+        const resolvedIdUpper = String(resolved.id || '').trim().toUpperCase();
+        const initialIdUpper = String(initialTargetId || '').trim().toUpperCase();
+        const isCompatibleId =
+          !initialIdUpper ||
+          !resolvedIdUpper ||
+          resolvedIdUpper === initialIdUpper ||
+          ((initialIdUpper === 'CHI-7649-NG' || initialIdUpper === 'CHI-4591-NG') &&
+            (resolvedIdUpper === 'CHI-7649-NG' || resolvedIdUpper === 'CHI-4591-NG'));
+        const isIdDisplayName = /^CHI-[A-Z0-9]{4}-[A-Z]{2,3}$/i.test(cleanAuthorName) || lowerAuth === 'operator';
+        const isCompatibleName =
+          Boolean(initialIdUpper) ||
+          isIdDisplayName ||
+          !cleanAuthorName ||
+          resolved.name.trim().toLowerCase() === lowerAuth;
+
+        if (isCompatibleId && isCompatibleName) {
+          const resolvedAv = isRealCustomAvatar(resolved.avatar) ? resolved.avatar : initialAv;
+          const resolvedExperiences =
+            Array.isArray(resolved.experiences) && resolved.experiences.length > 0
+              ? resolved.experiences
+              : peer?.experiences || [];
+          const fullProfileData = {
             name: resolved.name,
-            badge: resolved.headline,
+            badge: resolved.headline || initialProfileData.badge,
             avatar: resolvedAv,
-            inspectionsConducted: resolved.inspectionsConducted,
-            faultsIsolated: resolved.faultsIsolated,
+            inspectionsConducted: formatNumber(resolved.inspectionsConducted),
+            faultsIsolated: formatNumber(resolved.faultsIsolated),
             aiScanAccuracy: resolved.aiScanAccuracy,
             location: resolved.location,
             headline: resolved.headline,
             summary: resolved.summary,
             cover: resolved.cover,
             company: '',
-            meshLinksCount: prev[resolved.name]?.meshLinksCount ?? 120,
-            isConnected: prev[resolved.name]?.isConnected ?? false,
-            skills: prev[resolved.name]?.skills || [],
-            experiences: resolved.experiences?.length ? resolved.experiences : (prev[resolved.name]?.experiences || []),
-            endorsements: prev[resolved.name]?.endorsements || []
-          }
-        }));
+            experiences: resolvedExperiences,
+            operator_id: resolved.id || initialTargetId
+          };
+          setSelectedPeerProfile(fullProfileData);
+          setPeerProfiles((prev) => ({
+            ...prev,
+            [resolved.name]: {
+              ...(prev[resolved.name] || {}),
+              id: resolved.id || initialTargetId || `peer-${Date.now()}`,
+              verifiedId: resolved.id || initialTargetId,
+              name: resolved.name,
+              badge: resolved.headline,
+              avatar: resolvedAv,
+              inspectionsConducted: resolved.inspectionsConducted,
+              faultsIsolated: resolved.faultsIsolated,
+              aiScanAccuracy: resolved.aiScanAccuracy,
+              location: resolved.location,
+              headline: resolved.headline,
+              summary: resolved.summary,
+              cover: resolved.cover,
+              company: '',
+              meshLinksCount: prev[resolved.name]?.meshLinksCount ?? 120,
+              isConnected: prev[resolved.name]?.isConnected ?? false,
+              skills: prev[resolved.name]?.skills || [],
+              experiences: resolved.experiences?.length ? resolved.experiences : (prev[resolved.name]?.experiences || []),
+              endorsements: prev[resolved.name]?.endorsements || []
+            }
+          }));
+        }
       }
     } catch {}
 
     setTimeout(() => {
-      setIsPeerProfileLoading(false);
+      if (peerProfileRequestSeqRef.current === reqSeq) {
+        setIsPeerProfileLoading(false);
+      }
     }, 200);
   };
 
@@ -7713,10 +7784,19 @@ export function App() {
           setSelectedPeerProfile((prev: any) => {
             if (!prev) return prev;
             const pId = String(prev.operator_id || '').trim().toUpperCase();
-            const pNameKey = `name:${String(prev.name || '').trim().toLowerCase()}`;
-            const liveAv =
-              (pId && isRealCustomAvatar(idbLiveDir[pId]?.avatar) ? idbLiveDir[pId].avatar : '') ||
-              (isRealCustomAvatar(idbLiveDir[pNameKey]?.avatar) ? idbLiveDir[pNameKey].avatar : '');
+            const prevNameLower = String(prev.name || '').trim().toLowerCase();
+            const pNameKey = `name:${prevNameLower}`;
+            const dirEntry = pId ? idbLiveDir[pId] : idbLiveDir[pNameKey];
+            if (!dirEntry) return prev;
+            if (
+              prevNameLower &&
+              prevNameLower !== 'operator' &&
+              dirEntry.name &&
+              String(dirEntry.name).trim().toLowerCase() !== prevNameLower
+            ) {
+              return prev;
+            }
+            const liveAv = isRealCustomAvatar(dirEntry.avatar) ? dirEntry.avatar : '';
             if (liveAv && prev.avatar !== liveAv) {
               return { ...prev, avatar: liveAv };
             }
@@ -7794,7 +7874,7 @@ export function App() {
   // Direct Message Peer -> switch to Direct Chat
   const handleMessagePeer = (peer: PeerProfile) => {
     sound.playClick();
-    setSelectedPeerProfile(null);
+    closePeerProfile();
     setIsPeerProfileModalOpen(false);
     setActiveTab('messages');
     setIsChatOpen(true);
@@ -9566,6 +9646,49 @@ export function App() {
     triggerToast('🗑️ Your post has been permanently deleted.');
   };
 
+  const handleSaveEditedPost = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!editingPostTarget) return;
+    const trimmed = safeTrim(editingPostContent);
+    if (!trimmed && !editingPostTarget.postMedia) {
+      triggerToast('⚠️ Post text cannot be empty unless media is attached.');
+      return;
+    }
+
+    sound.playSuccess();
+    const targetId = String(editingPostTarget.id);
+    const updatedPost: PostItem = {
+      ...editingPostTarget,
+      content: trimmed
+    };
+
+    setPosts((prev) => {
+      const next = prev.map((p) => (String(p.id) === targetId ? updatedPost : p));
+      safeSetLocalStorage('chixus_feed_posts_v7', JSON.stringify(next));
+      return next;
+    });
+
+    // Silent background update to SQLite if reachable
+    try {
+      const esc = (s: string) => String(s || '').replace(/'/g, "''");
+      const newEncoded = encodePostContentForBackend(updatedPost, updatedPost.authorId);
+      const rawNumStr = targetId.replace('backend-post-', '').replace('db-post-', '');
+      if (/^\d+$/.test(rawNumStr)) {
+        const sql = `UPDATE posts SET content='${esc(newEncoded)}' WHERE id=${parseInt(rawNumStr, 10)};`;
+        fetch(`${API_BASE_URL}/api/admin/sql?key=chixus_admin_2026&query=${encodeURIComponent(sql)}`).catch(() => {});
+      } else {
+        const snippet = esc((editingPostTarget.content || '').slice(0, 40));
+        const sql = `UPDATE posts SET content='${esc(newEncoded)}' WHERE UPPER(author_id)=UPPER('${esc(updatedPost.authorId || '')}')${snippet ? ` AND content LIKE '%${snippet}%'` : ''};`;
+        fetch(`${API_BASE_URL}/api/admin/sql?key=chixus_admin_2026&query=${encodeURIComponent(sql)}`).catch(() => {});
+      }
+    } catch {}
+
+    logUserActivity(`Edited post on Feed: "${trimmed.slice(0, 60)}"`);
+    setEditingPostTarget(null);
+    setEditingPostContent('');
+    triggerToast('✏️ Post updated across your timeline.');
+  };
+
   const handleConfirmLogoutProceed = () => {
     sound.playClick();
     saveCurrentAccountVault();
@@ -10705,7 +10828,50 @@ export function App() {
       logUserActivity(
         `Asked Qorvex: "${displayMsgText.slice(0, 70)}"${attachedImg ? ' (with image)' : ''}${attachedFile ? ` (with file ${attachedFile.name})` : ''}${attachedAudio ? ' (with voice note)' : ''}`
       );
+
+      const initialSteps: Array<{ id: string; label: string; detail: string; status: 'done' | 'active' | 'pending' }> = [
+        {
+          id: 'step-1',
+          label: attachedImg
+            ? 'Scanning attached image frame'
+            : attachedFile
+            ? `Reading file: ${attachedFile.name}`
+            : attachedAudio
+            ? 'Processing operator voice note'
+            : 'Analyzing prompt & intent',
+          detail: cleanChatText
+            ? `"${cleanChatText.slice(0, 48)}${cleanChatText.length > 48 ? '...' : ''}"`
+            : 'Extracting multimodal payload...',
+          status: 'active'
+        },
+        {
+          id: 'step-2',
+          label: 'Syncing live CHIXUS telemetry & engineering context',
+          detail: 'Checking active feed, hardware logs & node profile',
+          status: 'pending'
+        },
+        {
+          id: 'step-3',
+          label: 'Formulating verified answer',
+          detail: 'Structuring practical steps & technical clarity',
+          status: 'pending'
+        }
+      ];
+      setQorvexThinkingSteps(initialSteps);
       setIsChixusAiTyping(true);
+
+      let stepCursor = 0;
+      const thinkingInterval = window.setInterval(() => {
+        stepCursor += 1;
+        setQorvexThinkingSteps((prev) =>
+          prev.map((step, idx) => {
+            if (idx < stepCursor) return { ...step, status: 'done' as const };
+            if (idx === stepCursor) return { ...step, status: 'active' as const };
+            return { ...step, status: 'pending' as const };
+          })
+        );
+      }, 550);
+
       const liveContext = buildLiveAppContext();
       const promptForAi =
         cleanChatText ||
@@ -10717,17 +10883,23 @@ export function App() {
           ? 'Please listen to this voice note and respond.'
           : 'Please inspect and identify this image and explain any electrical, electronic, or mechanical components or defects.');
 
-      const aiReplyText = await generateSmartChixusAiReply(
-        promptForAi,
-        userName,
-        myOpId,
-        recentHistory,
-        liveContext,
-        attachedImg,
-        attachedFile,
-        attachedAudio
-      );
-      setIsChixusAiTyping(false);
+      let aiReplyText = '';
+      try {
+        aiReplyText = await generateSmartChixusAiReply(
+          promptForAi,
+          userName,
+          myOpId,
+          recentHistory,
+          liveContext,
+          attachedImg,
+          attachedFile,
+          attachedAudio
+        );
+      } finally {
+        window.clearInterval(thinkingInterval);
+        setIsChixusAiTyping(false);
+        setQorvexThinkingSteps([]);
+      }
       const cleanedReply = cleanAiMessageText(aiReplyText);
       const replyMsgId = `reply-${Date.now()}`;
       const replyMsg: ChatMessage = {
@@ -11179,6 +11351,25 @@ export function App() {
   // -------------------------------------------------------------
   // MULTI-STAGE ONBOARDING GATEWAY (Premium Dark Silver, Fully Responsive, Futuristic Tech)
   // -------------------------------------------------------------
+  if (onboardStage === 'splash') {
+    return (
+      <OnboardingWelcomeScreen
+        logoSrc={metallicLogo}
+        onGetStarted={() => {
+          sound.playClick();
+          setToastFeedback(null);
+          setRegStep('details');
+          setOnboardStage('registration');
+        }}
+        onSignIn={() => {
+          sound.playClick();
+          setToastFeedback(null);
+          setOnboardStage('login');
+        }}
+      />
+    );
+  }
+
   if (onboardStage !== 'main_app') {
     return (
       <div
@@ -11188,297 +11379,123 @@ export function App() {
           top: 0,
           left: 0,
           width: '100vw',
-          height: '100vh',
-          backgroundColor: '#070a10',
+          height: '100dvh',
+          backgroundColor: '#080a0f',
           backgroundImage: `
-            radial-gradient(circle at 50% 15%, rgba(56, 189, 248, 0.08) 0%, transparent 60%),
-            radial-gradient(circle at 80% 85%, rgba(148, 163, 184, 0.05) 0%, transparent 50%),
-            linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px)
+            radial-gradient(60% 45% at 50% 0%, rgba(203, 213, 225, 0.065) 0%, transparent 70%),
+            radial-gradient(50% 40% at 85% 90%, rgba(148, 163, 184, 0.04) 0%, transparent 65%),
+            linear-gradient(180deg, #07090d 0%, #0b0e15 55%, #07090e 100%)
           `,
-          backgroundSize: '100% 100%, 100% 100%, 32px 32px, 32px 32px',
           color: '#f8fafc',
-          fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace, sans-serif',
+          fontFamily: "'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
-          justifyContent: 'center',
+          justifyContent: 'flex-start',
           zIndex: 99999,
           boxSizing: 'border-box',
-          padding: '16px',
+          padding: 0,
           overflowY: 'auto'
         }}
       >
-        {/* Central Premium Dark Silver & Brushed Titanium Chassis Card */}
+        {/* Expanded Full-Screen Industrial Container (Borderless, Spacious Layout) */}
         <div
           id="gateway-container-card"
-          className="stage-transition-card dark-silver-card-pulse"
+          className="stage-transition-card"
           style={{
             width: '100%',
-            maxWidth: onboardStage === 'registration' || onboardStage === 'caution' ? '540px' : '490px',
-            minHeight: onboardStage === 'registration' || onboardStage === 'caution' ? 'calc(100vh - 32px)' : undefined,
-            height: onboardStage === 'registration' || onboardStage === 'caution' ? 'calc(100vh - 32px)' : undefined,
-            background: 'linear-gradient(165deg, rgba(28, 36, 48, 0.96) 0%, rgba(18, 24, 34, 0.98) 55%, rgba(10, 14, 21, 0.99) 100%)',
-            border: '1px solid rgba(192, 202, 217, 0.28)',
-            borderRadius: '18px',
-            boxShadow: '0 25px 80px rgba(0, 0, 0, 0.88), 0 0 45px rgba(56, 189, 248, 0.12), inset 0 1px 1px rgba(255, 255, 255, 0.3)',
-            padding: onboardStage === 'registration' || onboardStage === 'caution' ? '20px 20px 16px' : '28px 24px',
+            maxWidth: '680px',
+            minHeight: '100dvh',
+            margin: '0 auto',
+            padding: 'clamp(20px, 4vw, 36px) clamp(18px, 4vw, 32px) 32px',
             display: 'flex',
             flexDirection: 'column',
-            justifyContent: onboardStage === 'registration' || onboardStage === 'caution' ? 'space-between' : undefined,
-            gap: onboardStage === 'registration' || onboardStage === 'caution' ? '12px' : '20px',
+            justifyContent: onboardStage === 'registration' || onboardStage === 'caution' ? 'space-between' : 'center',
+            gap: '24px',
             boxSizing: 'border-box',
-            position: 'relative',
-            overflow: 'hidden',
-            backdropFilter: 'blur(20px)'
+            position: 'relative'
           }}
         >
-          {/* Animated Futuristic Laser Scanning Beam on Top Border */}
-          <div
-            style={{
-              position: 'absolute',
-              top: 0,
-              left: 0,
-              right: 0,
-              height: '2px',
-              background: 'linear-gradient(90deg, transparent 0%, rgba(56, 189, 248, 0.4) 30%, #ffffff 50%, rgba(56, 189, 248, 0.4) 70%, transparent 100%)',
-              overflow: 'hidden'
-            }}
-          >
-            <div
-              className="silver-scan-beam"
-              style={{
-                width: '40%',
-                height: '100%',
-                background: '#ffffff',
-                filter: 'blur(1px)'
-              }}
-            />
-          </div>
-
-          {/* Micro HUD Status Bar */}
+          {/* Minimal Top Brand & Back Bar */}
           <div
             style={{
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
-              fontSize: '9px',
-              fontFamily: 'monospace',
-              letterSpacing: '1px',
-              color: '#94a3b8',
-              borderBottom: '1px solid rgba(148, 163, 184, 0.15)',
-              paddingBottom: '8px'
+              width: '100%',
+              marginBottom: onboardStage === 'login' ? '4px' : 0,
+              flexShrink: 0
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#10b981', boxShadow: '0 0 8px #10b981' }} />
-              <span style={{ color: '#94a3b8' }}>OPERATOR GATEWAY</span>
-            </div>
-            <span style={{ color: '#38bdf8' }}>ENCLAVE: SECURE</span>
-          </div>
-
-          {/* Phase A: SPLASH SCREEN (3 Seconds) */}
-          {onboardStage === 'splash' && (
-            <div
-              key="stage-splash"
-              className="stage-transition-card"
+            <button
+              type="button"
+              onClick={() => {
+                sound.playClick();
+                setToastFeedback(null);
+                setOnboardStage('splash');
+              }}
               style={{
-                display: 'flex',
-                flexDirection: 'column',
+                background: 'rgba(20, 25, 36, 0.72)',
+                border: '1px solid rgba(203, 213, 225, 0.16)',
+                borderRadius: '10px',
+                color: '#cbd5e1',
+                fontSize: '12.5px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                padding: '8px 14px',
+                minHeight: '40px',
+                display: 'inline-flex',
                 alignItems: 'center',
-                textAlign: 'center',
-                gap: '18px',
-                transition: 'opacity 0.25s ease, transform 0.25s ease',
-                animation: 'stageFadeScale 0.25s ease forwards'
+                gap: '6px',
+                boxShadow: '0 8px 20px rgba(0, 0, 0, 0.4)',
+                transition: 'all 0.2s ease'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.color = '#ffffff';
+                e.currentTarget.style.borderColor = 'rgba(203, 213, 225, 0.38)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.color = '#cbd5e1';
+                e.currentTarget.style.borderColor = 'rgba(203, 213, 225, 0.16)';
               }}
             >
-              {/* Metallic Silver Vector Line Icon Grid Element with Radar Sweep */}
+              <ArrowLeft style={{ width: '15px', height: '15px' }} />
+              <span>Back</span>
+            </button>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <div
                 style={{
-                  width: '100px',
-                  height: '100px',
-                  borderRadius: '50%',
-                  background: 'linear-gradient(135deg, #2a3444 0%, #131924 100%)',
-                  border: '2px solid rgba(203, 213, 225, 0.4)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  boxShadow: '0 0 40px rgba(56, 189, 248, 0.3), inset 0 0 20px rgba(0, 0, 0, 0.7)',
-                  position: 'relative',
-                  overflow: 'hidden'
+                  width: '32px',
+                  height: '32px',
+                  borderRadius: '8px',
+                  overflow: 'hidden',
+                  border: '1px solid rgba(203, 213, 225, 0.25)',
+                  background: '#11151d'
                 }}
               >
-                {/* Radar Line Sweep Animation */}
-                <div
-                  className="radar-sweep-effect"
-                  style={{
-                    position: 'absolute',
-                    width: '100%',
-                    height: '100%',
-                    background: 'conic-gradient(from 0deg, transparent 0deg, rgba(56, 189, 248, 0.15) 300deg, rgba(255, 255, 255, 0.5) 360deg)',
-                    pointerEvents: 'none',
-                    borderRadius: '50%'
-                  }}
-                />
                 <img
                   src={metallicLogo}
-                  alt="CHIXUS Emblem"
-                  style={{ width: '84%', height: '84%', objectFit: 'contain', zIndex: 2 }}
+                  alt="CHIXUS"
+                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                   referrerPolicy="no-referrer"
                 />
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: '8px',
-                    right: '8px',
-                    width: '10px',
-                    height: '10px',
-                    borderRadius: '50%',
-                    background: '#10b981',
-                    border: '2px solid #090d16',
-                    boxShadow: '0 0 8px #10b981',
-                    zIndex: 3
-                  }}
-                />
               </div>
-
-              {/* Title & Crisp Silver Lettering with 4px Character Spacing */}
-              <div>
-                <div
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    background: 'rgba(56, 189, 248, 0.12)',
-                    border: '1px solid rgba(56, 189, 248, 0.3)',
-                    borderRadius: '20px',
-                    padding: '4px 12px',
-                    fontSize: '10px',
-                    fontFamily: 'monospace',
-                    fontWeight: 'bold',
-                    color: '#38bdf8',
-                    letterSpacing: '1.5px',
-                    marginBottom: '12px',
-                    textTransform: 'uppercase'
-                  }}
-                >
-                  <Shield style={{ width: '12px', height: '12px', color: '#38bdf8' }} />
-                  <span>Hardware & Circuit Diagnostics</span>
-                </div>
-
-                <h1
-                  style={{
-                    fontSize: '24px',
-                    fontWeight: 900,
-                    fontFamily: 'monospace',
-                    letterSpacing: '4px',
-                    color: '#f8fafc',
-                    textShadow: '0 2px 10px rgba(0, 0, 0, 0.7)',
-                    margin: '0 0 8px 0'
-                  }}
-                >
-                  WELCOME TO CHIXUS
-                </h1>
-
-                <p
-                  style={{
-                    fontSize: '12px',
-                    color: '#94a3b8',
-                    lineHeight: 1.6,
-                    margin: 0,
-                    maxWidth: '360px',
-                    fontFamily: 'monospace'
-                  }}
-                >
-                  Your smart electronics testing and circuit inspection hub. Check solder joints, connect with other engineers, and share helpful technical feedback with ease.
-                </p>
-              </div>
-
-              {/* Real-time Boot Progress Bar */}
-              <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '6px' }}>
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    fontSize: '11px',
-                    fontFamily: 'monospace',
-                    color: '#cbd5e1'
-                  }}
-                >
-                  <span>
-                    {splashProgress < 40
-                      ? 'Starting up system...'
-                      : splashProgress < 80
-                      ? 'Connecting to network...'
-                      : 'Ready to begin!'}
-                  </span>
-                  <span style={{ fontWeight: 'bold', color: '#38bdf8' }}>{Math.min(100, Math.max(0, splashProgress))}%</span>
-                </div>
-
-                <div
-                  style={{
-                    width: '100%',
-                    height: '6px',
-                    backgroundColor: 'rgba(9, 13, 20, 0.9)',
-                    borderRadius: '999px',
-                    overflow: 'hidden',
-                    border: '1px solid rgba(148, 163, 184, 0.25)',
-                    boxShadow: 'inset 0 1px 3px rgba(0, 0, 0, 0.6)'
-                  }}
-                >
-                  <div
-                    style={{
-                      height: '100%',
-                      width: `${splashProgress}%`,
-                      background: 'linear-gradient(90deg, #38bdf8 0%, #cbd5e1 60%, #ffffff 100%)',
-                      borderRadius: '999px',
-                      boxShadow: '0 0 12px rgba(56, 189, 248, 0.6)',
-                      transition: 'width 0.15s ease'
-                    }}
-                  />
-                </div>
-              </div>
-
-              {/* Fast Skip Option */}
-              <button
-                type="button"
-                id="skip-splash-btn"
-                onClick={() => {
-                  sound.playClick();
-                  setOnboardStage('login');
-                }}
+              <span
                 style={{
-                  background: 'transparent',
-                  border: '1px solid rgba(148, 163, 184, 0.2)',
-                  color: '#94a3b8',
-                  fontSize: '11px',
-                  fontFamily: 'monospace',
-                  cursor: 'pointer',
-                  padding: '6px 14px',
-                  borderRadius: '6px',
-                  marginTop: '4px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '4px',
-                  transition: 'all 0.2s'
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.color = '#ffffff';
-                  e.currentTarget.style.borderColor = '#cbd5e1';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.color = '#94a3b8';
-                  e.currentTarget.style.borderColor = 'rgba(148, 163, 184, 0.2)';
+                  fontFamily: "'Chakra Petch', sans-serif",
+                  fontSize: '15px',
+                  fontWeight: 700,
+                  letterSpacing: '0.2em',
+                  color: '#f1f5f9'
                 }}
               >
-                <span>SKIP TO LOGIN</span>
-                <ChevronRight style={{ width: '12px', height: '12px' }} />
-              </button>
+                CHIXUS
+              </span>
             </div>
-          )}
+          </div>
 
-          {/* Phase B: LOGIN PHASE (Futuristic Dark Silver) */}
+          {/* Phase B: LOGIN PHASE (Expanded Full-Screen Dark Metallic with Elevated Floating Fields) */}
           {onboardStage === 'login' && (
             <div
               key="stage-login"
@@ -11486,111 +11503,68 @@ export function App() {
               style={{
                 display: 'flex',
                 flexDirection: 'column',
-                gap: '18px',
+                gap: '22px',
+                width: '100%',
                 transition: 'opacity 0.25s ease, transform 0.25s ease',
                 animation: 'stageFadeScale 0.25s ease forwards'
               }}
             >
-              {/* Header */}
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  borderBottom: '1px solid rgba(148, 163, 184, 0.2)',
-                  paddingBottom: '14px'
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                  <div
-                    style={{
-                      width: '40px',
-                      height: '40px',
-                      borderRadius: '10px',
-                      background: 'linear-gradient(135deg, #242e3d 0%, #131924 100%)',
-                      border: '1px solid rgba(203, 213, 225, 0.35)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      color: '#38bdf8',
-                      boxShadow: '0 0 16px rgba(56, 189, 248, 0.2), inset 0 1px 1px rgba(255, 255, 255, 0.2)'
-                    }}
-                  >
-                    <Lock style={{ width: '18px', height: '18px' }} />
-                  </div>
-                  <div>
-                    <div
-                      style={{
-                        fontSize: '16px',
-                        fontWeight: 900,
-                        fontFamily: 'monospace',
-                        color: '#f8fafc',
-                        letterSpacing: '1px',
-                        textShadow: '0 2px 8px rgba(0, 0, 0, 0.5)'
-                      }}
-                    >
-                      OPERATOR GATEWAY
-                    </div>
-                    <div style={{ fontSize: '11px', color: '#94a3b8', fontFamily: 'monospace' }}>
-                      Secure Sovereign Authorization
-                    </div>
-                  </div>
-                </div>
-                <div
+              {/* Clean Sign-In Header */}
+              <div style={{ paddingBottom: '6px' }}>
+                <h1
                   style={{
-                    background: 'rgba(56, 189, 248, 0.1)',
-                    border: '1px solid rgba(56, 189, 248, 0.25)',
-                    borderRadius: '6px',
-                    padding: '3px 9px',
-                    fontSize: '10px',
-                    fontFamily: 'monospace',
-                    color: '#38bdf8',
-                    letterSpacing: '0.5px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '5px'
+                    fontSize: 'clamp(1.65rem, 3.2vw, 2.15rem)',
+                    fontWeight: 700,
+                    color: '#f8fafc',
+                    letterSpacing: '-0.02em',
+                    margin: '0 0 6px 0',
+                    lineHeight: 1.15
                   }}
                 >
-                  <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#38bdf8' }} />
-                  <span>AUTH</span>
-                </div>
+                  Sign In
+                </h1>
+                <p style={{ fontSize: '14px', color: '#94a3b8', margin: 0, lineHeight: 1.5 }}>
+                  Enter your CHIXUS ID and password to continue.
+                </p>
               </div>
 
-              {/* Login Form Field: ENTER YOUR UNIQUE CHIXUS ID & PASSWORD */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              {/* Login Form Fields */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
                 <div>
                   <label
                     htmlFor="login-user-id-field"
                     style={{
                       display: 'block',
-                      fontSize: '11px',
-                      fontFamily: 'monospace',
+                      fontSize: '12px',
                       color: '#cbd5e1',
                       marginBottom: '8px',
-                      fontWeight: 'bold',
-                      letterSpacing: '0.5px'
+                      fontWeight: 600,
+                      letterSpacing: '0.02em'
                     }}
                   >
-                    ENTER YOUR UNIQUE CHIXUS ID
+                    CHIXUS ID
                   </label>
                   <div
                     className="futuristic-dark-input"
                     style={{
                       display: 'flex',
                       alignItems: 'center',
-                      background: 'rgba(8, 11, 18, 0.92)',
+                      background: 'rgba(17, 22, 32, 0.92)',
                       border:
                         userIdInput.trim().length > 0 &&
-                        !/^CHI-[A-Z0-9]{4}-[A-Z]{2,3}$/i.test(userIdInput.trim())
+                        !/^CHI-[A-Z0-9]{4}-[A-Z]{2,3}$/i.test(userIdInput.trim()) &&
+                        !isHardcodedTestIdentifier(userIdInput.trim())
                           ? '1.5px solid #ef4444'
-                          : '1px solid rgba(148, 163, 184, 0.28)',
-                      borderRadius: '10px',
-                      padding: '0 12px',
+                          : '1px solid rgba(203, 213, 225, 0.2)',
+                      borderRadius: '14px',
+                      padding: '4px 16px',
+                      minHeight: '54px',
                       boxShadow:
                         userIdInput.trim().length > 0 &&
-                        !/^CHI-[A-Z0-9]{4}-[A-Z]{2,3}$/i.test(userIdInput.trim())
-                          ? '0 0 12px rgba(239, 68, 68, 0.35), inset 0 2px 4px rgba(0, 0, 0, 0.6)'
-                          : 'inset 0 2px 4px rgba(0, 0, 0, 0.6)',
+                        !/^CHI-[A-Z0-9]{4}-[A-Z]{2,3}$/i.test(userIdInput.trim()) &&
+                        !isHardcodedTestIdentifier(userIdInput.trim())
+                          ? '0 10px 26px rgba(239, 68, 68, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.06)'
+                          : '0 12px 30px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08)',
                       transition: 'all 0.2s ease'
                     }}
                   >
@@ -11600,7 +11574,8 @@ export function App() {
                         height: '16px',
                         color:
                           userIdInput.trim().length > 0 &&
-                          !/^CHI-[A-Z0-9]{4}-[A-Z]{2,3}$/i.test(userIdInput.trim())
+                          !/^CHI-[A-Z0-9]{4}-[A-Z]{2,3}$/i.test(userIdInput.trim()) &&
+                          !isHardcodedTestIdentifier(userIdInput.trim())
                             ? '#ef4444'
                             : '#38bdf8',
                         marginRight: '10px',
@@ -11635,7 +11610,8 @@ export function App() {
                     />
                   </div>
                   {userIdInput.trim().length > 0 &&
-                    !/^CHI-[A-Z0-9]{4}-[A-Z]{2,3}$/i.test(userIdInput.trim()) && (
+                    !/^CHI-[A-Z0-9]{4}-[A-Z]{2,3}$/i.test(userIdInput.trim()) &&
+                    !isHardcodedTestIdentifier(userIdInput.trim()) && (
                       <div
                         id="login-invalid-id-alert"
                         style={{
@@ -11668,30 +11644,30 @@ export function App() {
                     htmlFor="login-password-field"
                     style={{
                       display: 'block',
-                      fontSize: '11px',
-                      fontFamily: 'monospace',
+                      fontSize: '12px',
                       color: '#cbd5e1',
                       marginBottom: '8px',
-                      fontWeight: 'bold',
-                      letterSpacing: '0.5px'
+                      fontWeight: 600,
+                      letterSpacing: '0.02em'
                     }}
                   >
-                    ENTER YOUR PRIVATE PASSWORD
+                    Password
                   </label>
                   <div
                     className="futuristic-dark-input"
                     style={{
                       display: 'flex',
                       alignItems: 'center',
-                      background: 'rgba(8, 11, 18, 0.92)',
-                      border: '1px solid rgba(148, 163, 184, 0.28)',
-                      borderRadius: '10px',
-                      padding: '0 12px',
-                      boxShadow: 'inset 0 2px 4px rgba(0, 0, 0, 0.6)',
+                      background: 'rgba(17, 22, 32, 0.92)',
+                      border: '1px solid rgba(203, 213, 225, 0.2)',
+                      borderRadius: '14px',
+                      padding: '4px 16px',
+                      minHeight: '54px',
+                      boxShadow: '0 12px 30px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08)',
                       transition: 'all 0.2s ease'
                     }}
                   >
-                    <Lock style={{ width: '16px', height: '16px', color: '#38bdf8', marginRight: '10px', flexShrink: 0 }} />
+                    <Lock style={{ width: '16px', height: '16px', color: '#cbd5e1', marginRight: '10px', flexShrink: 0 }} />
                     <input
                       id="login-password-field"
                       type="password"
@@ -11700,13 +11676,13 @@ export function App() {
                         setLoginPasswordInput(e.target.value);
                         if (toastFeedback) setToastFeedback(null);
                       }}
-                      placeholder="Enter private master password..."
+                      placeholder="Enter your password"
                       style={{
                         flex: 1,
                         background: 'transparent',
                         border: 'none',
                         color: '#ffffff',
-                        fontSize: '13px',
+                        fontSize: '14px',
                         fontFamily: 'monospace',
                         padding: '12px 0',
                         outline: 'none'
@@ -11762,7 +11738,7 @@ export function App() {
                     }
 
                     const hardwareNodeIdPattern = /^CHI-[A-Z0-9]{4}-[A-Z]{2,3}$/i;
-                    if (!hardwareNodeIdPattern.test(rawInput)) {
+                    if (!hardwareNodeIdPattern.test(rawInput) && !isHardcodedTestIdentifier(userIdInput.trim())) {
                       sound.playError();
                       setToastFeedback('❌ Invalid ID — Please enter a valid CHIXUS ID (e.g. CHI-2022-NG).');
                       return;
@@ -11819,9 +11795,10 @@ export function App() {
                       await hydrateOrResetAccountVault(opId, profileObj, false);
 
                       try {
-                        safeSetLocalStorage('chixus_terms_accepted_v1', 'true');
+                        localStorage.setItem('chixus_terms_accepted_v1', 'true');
                         localStorage.removeItem('chixus_explicit_logout_v1');
-                        safeSetLocalStorage('chixus_onboard_stage_v1', 'main_app');
+                        localStorage.setItem('chixus_onboard_stage_v1', 'main_app');
+                        localStorage.setItem('chixus_onboarding_completed_v1', 'true');
                       } catch {}
 
                       setCurrentUserProfile(profileObj);
@@ -11864,19 +11841,19 @@ export function App() {
                   }}
                   style={{
                     width: '100%',
-                    padding: '14px 18px',
-                    borderRadius: '10px',
+                    minHeight: '52px',
+                    padding: '14px 20px',
+                    borderRadius: '14px',
                     background: !userIdInput.trim() || !loginPasswordInput.trim() || isConnectingLoading
-                      ? 'linear-gradient(135deg, #1b2330 0%, #10151f 100%)'
-                      : 'linear-gradient(135deg, #ffffff 0%, #e2e8f0 25%, #cbd5e1 60%, #94a3b8 100%)',
+                      ? 'linear-gradient(135deg, #1a202c 0%, #111620 100%)'
+                      : 'linear-gradient(180deg, #f8fafc 0%, #e2e8f0 45%, #cbd5e1 100%)',
                     border: !userIdInput.trim() || !loginPasswordInput.trim() || isConnectingLoading
-                      ? '1px solid rgba(148, 163, 184, 0.15)'
-                      : '1px solid #ffffff',
+                      ? '1px solid rgba(148, 163, 184, 0.16)'
+                      : '1px solid rgba(255, 255, 255, 0.85)',
                     color: !userIdInput.trim() || !loginPasswordInput.trim() || isConnectingLoading ? '#64748b' : '#080c14',
-                    fontSize: '12px',
-                    fontWeight: 900,
-                    fontFamily: 'monospace',
-                    letterSpacing: '1.5px',
+                    fontSize: '14px',
+                    fontWeight: 700,
+                    letterSpacing: '0.02em',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
@@ -11884,28 +11861,25 @@ export function App() {
                     cursor: !userIdInput.trim() || !loginPasswordInput.trim() || isConnectingLoading ? 'not-allowed' : 'pointer',
                     boxShadow: !userIdInput.trim() || !loginPasswordInput.trim() || isConnectingLoading
                       ? 'none'
-                      : '0 6px 24px rgba(203, 213, 225, 0.35), inset 0 1px 1px #ffffff',
-                    opacity: !userIdInput.trim() || !loginPasswordInput.trim() ? 0.45 : isConnectingLoading ? 0.85 : 1,
+                      : '0 14px 34px rgba(0, 0, 0, 0.55), 0 0 24px rgba(226, 232, 240, 0.18), inset 0 1px 1px #ffffff',
+                    opacity: !userIdInput.trim() || !loginPasswordInput.trim() ? 0.5 : isConnectingLoading ? 0.85 : 1,
                     transition: 'all 0.2s ease'
                   }}
                 >
                   {isConnectingLoading ? (
                     <>
-                      <Activity style={{ width: '15px', height: '15px', color: '#38bdf8', animation: 'spin 1.5s linear infinite' }} />
-                      <span style={{ color: '#38bdf8', fontSize: '11px', letterSpacing: '0.5px' }}>
-                        SYNCHRONIZING SECURE NODE PROTOCOLS...
+                      <Activity style={{ width: '16px', height: '16px', color: '#cbd5e1', animation: 'spin 1.5s linear infinite' }} />
+                      <span style={{ color: '#cbd5e1', fontSize: '13px' }}>
+                        Signing in...
                       </span>
                     </>
                   ) : (
-                    <>
-                      <Zap style={{ width: '16px', height: '16px', color: !userIdInput.trim() || !loginPasswordInput.trim() ? '#64748b' : '#080c14' }} />
-                      <span>CONNECT NODE</span>
-                    </>
+                    <span>Sign In</span>
                   )}
                 </button>
 
-                  {/* Clean Notice: New operator? Click here to register. */}
-                  <div style={{ textAlign: 'center', marginTop: '4px', display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'center' }}>
+                  {/* Clean Notice: Create a new account */}
+                  <div style={{ textAlign: 'center', marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '10px', alignItems: 'center' }}>
                     <button
                       type="button"
                       id="switch-to-register-text-btn"
@@ -11918,18 +11892,18 @@ export function App() {
                       style={{
                         background: 'none',
                         border: 'none',
-                        color: '#94a3b8',
-                        fontSize: '12px',
-                        fontFamily: 'monospace',
+                        color: '#cbd5e1',
+                        fontSize: '13px',
+                        fontWeight: 500,
                         cursor: 'pointer',
                         textDecoration: 'underline',
-                        padding: '4px 8px',
+                        padding: '6px 10px',
                         transition: 'color 0.2s'
                       }}
                       onMouseEnter={(e) => (e.currentTarget.style.color = '#ffffff')}
-                      onMouseLeave={(e) => (e.currentTarget.style.color = '#94a3b8')}
+                      onMouseLeave={(e) => (e.currentTarget.style.color = '#cbd5e1')}
                     >
-                      New operator? Click here to register.
+                      New to CHIXUS? Create an account
                     </button>
 
                   <button
@@ -12076,69 +12050,42 @@ export function App() {
               }}
             >
               {/* Top Header - Dynamically adjusts based on regStep */}
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid rgba(148, 163, 184, 0.15)', paddingBottom: '10px', flexShrink: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <div
-                    style={{
-                      width: '36px',
-                      height: '36px',
-                      borderRadius: '10px',
-                      background: 'linear-gradient(135deg, rgba(255, 255, 255, 0.08) 0%, rgba(148, 163, 184, 0.12) 100%)',
-                      border: '1px solid rgba(226, 232, 240, 0.25)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      color: '#38bdf8',
-                      boxShadow: '0 0 12px rgba(56, 189, 248, 0.15)'
-                    }}
-                  >
-                    {regStep === 'details' && <Fingerprint style={{ width: '18px', height: '18px' }} />}
-                    {regStep === 'verify_email' && <Mail style={{ width: '18px', height: '18px' }} />}
-                    {regStep === 'create_password' && <Lock style={{ width: '18px', height: '18px' }} />}
-                  </div>
-                  <div>
-                    <div style={{ fontSize: '15px', fontWeight: 900, fontFamily: 'monospace', color: '#f1f5f9', letterSpacing: '0.8px' }}>
-                      {regStep === 'details' && 'NODE ENROLLMENT'}
-                      {regStep === 'verify_email' && 'EMAIL VERIFICATION'}
-                      {regStep === 'create_password' && 'CREATE PASSWORD'}
-                    </div>
-                  </div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid rgba(148, 163, 184, 0.16)', paddingBottom: '14px', flexShrink: 0 }}>
+                <div>
+                  <h1 style={{ fontSize: 'clamp(1.45rem, 3vw, 1.9rem)', fontWeight: 700, color: '#f8fafc', margin: '0 0 4px 0', letterSpacing: '-0.02em' }}>
+                    {regStep === 'details' && 'Create Account'}
+                    {regStep === 'verify_email' && 'Verify Email'}
+                    {regStep === 'create_password' && 'Create Password'}
+                  </h1>
+                  <p style={{ fontSize: '13px', color: '#94a3b8', margin: 0 }}>
+                    {regStep === 'details' && 'Enter your details to set up your CHIXUS account.'}
+                    {regStep === 'verify_email' && 'Enter the 6-digit verification code sent to your email.'}
+                    {regStep === 'create_password' && 'Choose a 4-digit password to secure your account.'}
+                  </p>
                 </div>
-                <div
-                  style={{
-                    background: 'rgba(56, 189, 248, 0.1)',
-                    border: '1px solid rgba(56, 189, 248, 0.3)',
-                    borderRadius: '8px',
-                    padding: '3px 8px',
-                    fontSize: '10px',
-                    fontFamily: 'monospace',
-                    color: '#38bdf8',
-                    letterSpacing: '1px',
-                    fontWeight: 700
-                  }}
-                >
-                  {regStep === 'details' && 'STAGE: ENROLL'}
-                  {regStep === 'verify_email' && 'STEP 2: 6-DIGIT CODE'}
-                  {regStep === 'create_password' && 'STEP 3: 4-DIGIT PIN'}
-                </div>
+                <span style={{ fontSize: '12px', fontWeight: 600, color: '#cbd5e1', whiteSpace: 'nowrap', marginLeft: '12px' }}>
+                  {regStep === 'details' && 'Step 1 of 3'}
+                  {regStep === 'verify_email' && 'Step 2 of 3'}
+                  {regStep === 'create_password' && 'Step 3 of 3'}
+                </span>
               </div>
 
-              {/* STEP 1: FILL DETAILS (PASSWORD IS REMOVED HERE) */}
+              {/* STEP 1: FILL DETAILS */}
               {regStep === 'details' && (
                 <div
                   style={{
                     flex: 1,
                     display: 'flex',
                     flexDirection: 'column',
-                    gap: '12px',
+                    gap: '14px',
                     overflowY: 'auto',
                     paddingRight: '4px',
                     minHeight: 0
                   }}
                 >
                   <div>
-                    <label style={{ display: 'block', fontSize: '11px', fontFamily: 'monospace', color: '#cbd5e1', marginBottom: '4px', fontWeight: 'bold' }}>
-                      FULL LEGAL / ENGINEER NAME *
+                    <label style={{ display: 'block', fontSize: '12px', color: '#cbd5e1', marginBottom: '6px', fontWeight: 600 }}>
+                      Full Legal Name *
                     </label>
                     <input
                       type="text"
@@ -12156,29 +12103,30 @@ export function App() {
                       className="futuristic-dark-input"
                       style={{
                         width: '100%',
-                        background: 'rgba(8, 12, 20, 0.75)',
-                        border: regFormErrors.fullName ? '2px solid #ef4444' : '1px solid rgba(148, 163, 184, 0.22)',
-                        borderRadius: '8px',
-                        padding: '8px 12px',
+                        background: 'rgba(17, 22, 32, 0.92)',
+                        border: regFormErrors.fullName ? '1.5px solid #ef4444' : '1px solid rgba(203, 213, 225, 0.2)',
+                        borderRadius: '14px',
+                        padding: '13px 16px',
+                        minHeight: '50px',
                         color: '#f8fafc',
-                        fontSize: '12px',
-                        fontFamily: 'monospace',
+                        fontSize: '14px',
+                        boxShadow: '0 10px 26px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.06)',
                         outline: 'none',
                         boxSizing: 'border-box'
                       }}
                     />
                     {regFormErrors.fullName && (
-                      <div style={{ fontSize: '10.5px', color: '#ef4444', fontFamily: 'monospace', marginTop: '4px', fontWeight: 'bold' }}>
+                      <div style={{ fontSize: '11.5px', color: '#ef4444', marginTop: '5px', fontWeight: 600 }}>
                         Please enter your full legal First and Last name
                       </div>
                     )}
                   </div>
 
-                  {/* WhatsApp-Style Automatic Country Code & Phone Verification */}
+                  {/* Country Code & Phone Verification */}
                   <div>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
-                      <label style={{ fontSize: '11px', fontFamily: 'monospace', color: '#cbd5e1', fontWeight: 'bold' }}>
-                        PHONE NUMBER & COUNTRY CODE *
+                      <label style={{ fontSize: '12px', color: '#cbd5e1', fontWeight: 600 }}>
+                        Phone Number & Country Code *
                       </label>
                     </div>
 
@@ -12190,43 +12138,27 @@ export function App() {
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'space-between',
-                        background: 'linear-gradient(135deg, rgba(8, 14, 26, 0.95), rgba(15, 23, 42, 0.95))',
-                        border: '1px solid rgba(56, 189, 248, 0.45)',
-                        borderRadius: '8px',
-                        padding: '10px 14px',
-                        marginBottom: '8px',
-                        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.4)',
+                        background: 'rgba(17, 22, 32, 0.92)',
+                        border: '1px solid rgba(203, 213, 225, 0.2)',
+                        borderRadius: '14px',
+                        padding: '12px 16px',
+                        marginBottom: '10px',
+                        boxShadow: '0 10px 26px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.06)',
                         transition: 'all 0.2s ease'
                       }}
                     >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                         <span style={{ fontSize: '24px', lineHeight: 1 }}>{detectedRegion.flag}</span>
                         <div>
-                          <div style={{ fontSize: '14px', fontWeight: 'bold', color: '#38bdf8', fontFamily: 'monospace' }}>
+                          <div style={{ fontSize: '14px', fontWeight: 600, color: '#f1f5f9' }}>
                             {detectedRegion.country}
                           </div>
-                          <div style={{ fontSize: '10.5px', color: '#94a3b8', fontFamily: 'monospace' }}>
-                            Calling Code: <span style={{ color: '#ffffff', fontWeight: 'bold' }}>{detectedRegion.phoneCode}</span>
+                          <div style={{ fontSize: '12px', color: '#94a3b8' }}>
+                            Calling Code: <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{detectedRegion.phoneCode}</span>
                           </div>
                         </div>
                       </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <span
-                          style={{
-                            fontSize: '11px',
-                            fontFamily: 'monospace',
-                            color: '#34d399',
-                            background: 'rgba(52, 211, 153, 0.12)',
-                            border: '1px solid rgba(52, 211, 153, 0.35)',
-                            padding: '3px 8px',
-                            borderRadius: '6px',
-                            fontWeight: 'bold',
-                            letterSpacing: '0.5px'
-                          }}
-                        >
-                          SUFFIX: -{detectedRegion.suffix}
-                        </span>
-                      </div>
+                      <ChevronRight style={{ width: '16px', height: '16px', color: '#94a3b8', flexShrink: 0 }} />
 
                       <select
                         aria-label="Worldwide Country Selector"
@@ -12286,16 +12218,18 @@ export function App() {
                           className="futuristic-dark-input"
                           style={{
                             width: '100%',
-                            background: 'rgba(8, 12, 20, 0.95)',
-                            border: regFormErrors.prefix ? '2px solid #ef4444' : '1px solid rgba(56, 189, 248, 0.5)',
-                            borderRadius: '8px',
-                            padding: '9px 10px',
-                            color: '#38bdf8',
-                            fontSize: '13px',
+                            background: 'rgba(17, 22, 32, 0.92)',
+                            border: regFormErrors.prefix ? '1.5px solid #ef4444' : '1px solid rgba(203, 213, 225, 0.2)',
+                            borderRadius: '14px',
+                            padding: '13px 12px',
+                            minHeight: '50px',
+                            color: '#f8fafc',
+                            fontSize: '14px',
                             fontFamily: 'monospace',
-                            fontWeight: 'bold',
+                            fontWeight: 600,
                             outline: 'none',
                             textAlign: 'center',
+                            boxShadow: '0 10px 26px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.06)',
                             boxSizing: 'border-box'
                           }}
                         />
@@ -12326,13 +12260,14 @@ export function App() {
                           className="futuristic-dark-input"
                           style={{
                             width: '100%',
-                            background: 'rgba(8, 12, 20, 0.75)',
-                            border: regFormErrors.phone ? '2px solid #ef4444' : '1px solid rgba(148, 163, 184, 0.22)',
-                            borderRadius: '8px',
-                            padding: '9px 12px',
+                            background: 'rgba(17, 22, 32, 0.92)',
+                            border: regFormErrors.phone ? '1.5px solid #ef4444' : '1px solid rgba(203, 213, 225, 0.2)',
+                            borderRadius: '14px',
+                            padding: '13px 16px',
+                            minHeight: '50px',
                             color: '#f8fafc',
-                            fontSize: '12px',
-                            fontFamily: 'monospace',
+                            fontSize: '14px',
+                            boxShadow: '0 10px 26px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.06)',
                             outline: 'none',
                             boxSizing: 'border-box'
                           }}
@@ -12340,15 +12275,15 @@ export function App() {
                       </div>
                     </div>
                     {(regFormErrors.prefix || regFormErrors.phone) && (
-                      <div style={{ fontSize: '10.5px', color: '#ef4444', fontFamily: 'monospace', marginTop: '4px', fontWeight: 'bold' }}>
+                      <div style={{ fontSize: '11.5px', color: '#ef4444', marginTop: '5px', fontWeight: 600 }}>
                         Invalid or already registered phone number - please check
                       </div>
                     )}
                   </div>
 
                   <div>
-                    <label style={{ display: 'block', fontSize: '11px', fontFamily: 'monospace', color: '#cbd5e1', marginBottom: '4px', fontWeight: 'bold' }}>
-                      CURRENT OPERATIONAL LOCATION *
+                    <label style={{ display: 'block', fontSize: '12px', color: '#cbd5e1', marginBottom: '6px', fontWeight: 600 }}>
+                      Location *
                     </label>
                     <input
                       type="text"
@@ -12365,54 +12300,56 @@ export function App() {
                       className="futuristic-dark-input"
                       style={{
                         width: '100%',
-                        background: 'rgba(8, 12, 20, 0.75)',
-                        border: regFormErrors.location ? '2px solid #ef4444' : '1px solid rgba(148, 163, 184, 0.22)',
-                        borderRadius: '8px',
-                        padding: '8px 12px',
+                        background: 'rgba(17, 22, 32, 0.92)',
+                        border: regFormErrors.location ? '1.5px solid #ef4444' : '1px solid rgba(203, 213, 225, 0.2)',
+                        borderRadius: '14px',
+                        padding: '13px 16px',
+                        minHeight: '50px',
                         color: '#f8fafc',
-                        fontSize: '12px',
-                        fontFamily: 'monospace',
+                        fontSize: '14px',
+                        boxShadow: '0 10px 26px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.06)',
                         outline: 'none',
                         boxSizing: 'border-box'
                       }}
                     />
                     {regFormErrors.location && (
-                      <div style={{ fontSize: '10.5px', color: '#ef4444', fontFamily: 'monospace', marginTop: '4px', fontWeight: 'bold' }}>
+                      <div style={{ fontSize: '11.5px', color: '#ef4444', marginTop: '5px', fontWeight: 600 }}>
                         Invalid input - please correct
                       </div>
                     )}
                   </div>
 
                   <div>
-                    <label style={{ display: 'block', fontSize: '11px', fontFamily: 'monospace', color: '#cbd5e1', marginBottom: '4px', fontWeight: 'bold' }}>
-                      PROFESSIONAL HEADLINE (OPTIONAL)
+                    <label style={{ display: 'block', fontSize: '12px', color: '#cbd5e1', marginBottom: '6px', fontWeight: 600 }}>
+                      Professional Headline (Optional)
                     </label>
                     <input
                       type="text"
                       id="reg-headline-input"
                       value={regHeadline}
                       onChange={(e) => setRegHeadline(e.target.value)}
-                      placeholder="Leave blank or enter custom headline..."
+                      placeholder="e.g. Field Maintenance Engineer"
                       className="futuristic-dark-input"
                       style={{
                         width: '100%',
-                        background: 'rgba(8, 12, 20, 0.75)',
-                        border: '1px solid rgba(148, 163, 184, 0.22)',
-                        borderRadius: '8px',
-                        padding: '8px 12px',
+                        background: 'rgba(17, 22, 32, 0.92)',
+                        border: '1px solid rgba(203, 213, 225, 0.2)',
+                        borderRadius: '14px',
+                        padding: '13px 16px',
+                        minHeight: '50px',
                         color: '#f8fafc',
-                        fontSize: '12px',
-                        fontFamily: 'monospace',
+                        fontSize: '14px',
+                        boxShadow: '0 10px 26px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.06)',
                         outline: 'none',
                         boxSizing: 'border-box'
                       }}
                     />
                   </div>
 
-                  {/* Strict Telemetry Dispatch Email Validation */}
+                  {/* Email Address */}
                   <div>
-                    <label style={{ display: 'block', fontSize: '11px', fontFamily: 'monospace', color: '#cbd5e1', marginBottom: '4px', fontWeight: 'bold' }}>
-                      TELEMETRY DISPATCH EMAIL *
+                    <label style={{ display: 'block', fontSize: '12px', color: '#cbd5e1', marginBottom: '6px', fontWeight: 600 }}>
+                      Email Address *
                     </label>
                     <input
                       type="email"
@@ -12426,23 +12363,24 @@ export function App() {
                           setRegFormErrors((prev) => ({ ...prev, email: false }));
                         }
                       }}
-                      placeholder="e.g. operator@chixus.grid"
+                      placeholder="e.g. name@example.com"
                       className="futuristic-dark-input"
                       style={{
                         width: '100%',
-                        background: 'rgba(8, 12, 20, 0.75)',
-                        border: regFormErrors.email ? '2px solid #ef4444' : '1px solid rgba(148, 163, 184, 0.22)',
-                        borderRadius: '8px',
-                        padding: '8px 12px',
+                        background: 'rgba(17, 22, 32, 0.92)',
+                        border: regFormErrors.email ? '1.5px solid #ef4444' : '1px solid rgba(203, 213, 225, 0.2)',
+                        borderRadius: '14px',
+                        padding: '13px 16px',
+                        minHeight: '50px',
                         color: '#f8fafc',
-                        fontSize: '12px',
-                        fontFamily: 'monospace',
+                        fontSize: '14px',
+                        boxShadow: '0 10px 26px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.06)',
                         outline: 'none',
                         boxSizing: 'border-box'
                       }}
                     />
                     {regFormErrors.email && (
-                      <div style={{ fontSize: '10.5px', color: '#ef4444', fontFamily: 'monospace', marginTop: '4px', fontWeight: 'bold' }}>
+                      <div style={{ fontSize: '11.5px', color: '#ef4444', marginTop: '5px', fontWeight: 600 }}>
                         {regEmail.includes('@')
                           ? 'This email has already been registered — cannot create a new account with it'
                           : "Invalid Email - must contain an '@' symbol"}
@@ -13844,16 +13782,22 @@ export function App() {
             position: 'sticky',
             top: 0,
             zIndex: 900,
-            background: 'linear-gradient(180deg, #13151b 0%, #0c0e12 100%)',
-            borderBottom: '1px solid #232731',
-            boxShadow: '0 8px 24px rgba(0, 0, 0, 0.65), inset 0 1px 0 rgba(255, 255, 255, 0.06)',
+            background: darkModeTheme
+              ? 'linear-gradient(180deg, rgba(13, 17, 25, 0.96) 0%, rgba(7, 10, 16, 0.98) 100%)'
+              : 'linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(241, 245, 249, 0.98) 100%)',
+            backdropFilter: 'blur(12px)',
+            WebkitBackdropFilter: 'blur(12px)',
+            borderBottom: darkModeTheme ? '1px solid rgba(203, 213, 225, 0.14)' : '1px solid #cbd5e1',
+            boxShadow: darkModeTheme
+              ? '0 10px 28px rgba(0, 0, 0, 0.65), inset 0 1px 0 rgba(255, 255, 255, 0.08)'
+              : '0 6px 20px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.9)',
             padding: '12px 14px 10px',
             display: 'flex',
             flexDirection: 'column',
             gap: '12px'
           }}
         >
-          {/* Top Row: User Avatar, Title + Operator ID, Hardware Telemetry Pills, Bell, Hamburger */}
+          {/* Top Row: User Avatar, Title + Operator ID, Network Status, Bell, Hamburger */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
               <div
@@ -13869,7 +13813,7 @@ export function App() {
                   sound.playClick();
                   setIsDossierDrawerOpen(true);
                 }}
-                title="Tap profile avatar to open Dossier Dashboard Drawer"
+                title="Tap profile avatar to open Profile Drawer"
               >
                 <img
                   src={avatarUrl}
@@ -13887,7 +13831,7 @@ export function App() {
                       fontWeight: 900,
                       fontFamily: "'Space Grotesk', -apple-system, sans-serif",
                       letterSpacing: '0.8px',
-                      color: '#ffffff'
+                      color: darkModeTheme ? '#f8fafc' : '#0f172a'
                     }}
                   >
                     CHIXUS
@@ -13901,9 +13845,11 @@ export function App() {
                         gap: '3px',
                         padding: '1px 6px',
                         borderRadius: '4px',
-                        background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.2) 0%, rgba(217, 119, 6, 0.25) 100%)',
-                        border: '1px solid #f59e0b',
-                        color: '#fbbf24',
+                        background: darkModeTheme
+                          ? 'linear-gradient(135deg, rgba(37, 99, 235, 0.25) 0%, rgba(56, 189, 248, 0.18) 100%)'
+                          : '#e0f2fe',
+                        border: '1px solid #38bdf8',
+                        color: darkModeTheme ? '#7dd3fc' : '#0369a1',
                         fontSize: '9.5px',
                         fontFamily: 'monospace',
                         fontWeight: 900
@@ -13919,7 +13865,7 @@ export function App() {
                     fontSize: '11.5px',
                     fontFamily: 'monospace',
                     fontWeight: 700,
-                    color: '#9ca3af',
+                    color: darkModeTheme ? '#94a3b8' : '#475569',
                     letterSpacing: '0.6px'
                   }}
                 >
@@ -13949,21 +13895,23 @@ export function App() {
                 }}
                 style={{
                   position: 'relative',
-                  background: '#161920',
-                  border: '1px solid #2e3540',
-                  borderRadius: '10px',
+                  background: darkModeTheme ? '#0d1119' : '#ffffff',
+                  border: darkModeTheme ? '1px solid rgba(203, 213, 225, 0.2)' : '1px solid #cbd5e1',
+                  borderRadius: '11px',
                   width: '36px',
                   height: '36px',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  color: '#cbd5e1',
+                  color: darkModeTheme ? '#cbd5e1' : '#334155',
                   cursor: 'pointer',
-                  boxShadow: 'inset 0 1px 1px rgba(255, 255, 255, 0.08), 0 2px 6px rgba(0, 0, 0, 0.4)'
+                  boxShadow: darkModeTheme
+                    ? 'inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 4px 12px rgba(0, 0, 0, 0.45)'
+                    : '0 2px 6px rgba(15, 23, 42, 0.08)'
                 }}
                 title="Open Notification Hub"
               >
-                <Bell style={{ width: '16px', height: '16px', color: '#cbd5e1' }} />
+                <Bell style={{ width: '16px', height: '16px', color: darkModeTheme ? '#cbd5e1' : '#334155' }} />
                 {(() => {
                   const readSet = getReadNotificationIdsSet();
                   const unreadReqsCount = incomingConnectionRequests.filter(
@@ -13985,8 +13933,8 @@ export function App() {
                         height: '15px',
                         padding: '0 3px',
                         borderRadius: '999px',
-                        background: '#10b981',
-                        border: '1.5px solid #0c0e12',
+                        background: '#2563eb',
+                        border: darkModeTheme ? '1.5px solid #070a10' : '1.5px solid #ffffff',
                         color: '#ffffff',
                         fontSize: '8.5px',
                         fontFamily: 'monospace',
@@ -13994,7 +13942,7 @@ export function App() {
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
-                        boxShadow: '0 0 8px rgba(16, 185, 129, 0.8)'
+                        boxShadow: '0 0 10px rgba(56, 189, 248, 0.75)'
                       }}
                     >
                       {totalUnreadCount > 99 ? '99+' : totalUnreadCount}
@@ -14012,21 +13960,23 @@ export function App() {
                   setIsNetworkAdminDrawerOpen(true);
                 }}
                 style={{
-                  background: '#161920',
-                  border: '1px solid #2e3540',
-                  borderRadius: '10px',
+                  background: darkModeTheme ? '#0d1119' : '#ffffff',
+                  border: darkModeTheme ? '1px solid rgba(203, 213, 225, 0.2)' : '1px solid #cbd5e1',
+                  borderRadius: '11px',
                   width: '36px',
                   height: '36px',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  color: '#cbd5e1',
+                  color: darkModeTheme ? '#cbd5e1' : '#334155',
                   cursor: 'pointer',
-                  boxShadow: 'inset 0 1px 1px rgba(255, 255, 255, 0.08), 0 2px 6px rgba(0, 0, 0, 0.4)'
+                  boxShadow: darkModeTheme
+                    ? 'inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 4px 12px rgba(0, 0, 0, 0.45)'
+                    : '0 2px 6px rgba(15, 23, 42, 0.08)'
                 }}
                 title="Tap to open Network Administration Drawer"
               >
-                <Menu style={{ width: '18px', height: '18px', color: '#cbd5e1' }} />
+                <Menu style={{ width: '18px', height: '18px', color: darkModeTheme ? '#cbd5e1' : '#334155' }} />
               </button>
             </div>
           </div>
@@ -14037,11 +13987,11 @@ export function App() {
             style={{
               display: 'flex',
               alignItems: 'center',
-              background: '#121418',
-              border: '1px solid #282d37',
+              background: darkModeTheme ? '#090c12' : '#e2e8f0',
+              border: darkModeTheme ? '1px solid rgba(203, 213, 225, 0.14)' : '1px solid #cbd5e1',
               borderRadius: '9999px',
               padding: '3px 4px',
-              boxShadow: 'inset 0 2px 4px rgba(0, 0, 0, 0.65)'
+              boxShadow: darkModeTheme ? 'inset 0 2px 5px rgba(0, 0, 0, 0.72)' : 'inset 0 1px 3px rgba(15, 23, 42, 0.08)'
             }}
           >
             {[
@@ -14071,9 +14021,11 @@ export function App() {
                       justifyContent: 'center',
                       gap: '5px',
                       background: isActive
-                        ? 'linear-gradient(180deg, #f1f5f9 0%, #cbd5e1 50%, #94a3b8 100%)'
+                        ? darkModeTheme
+                          ? 'linear-gradient(180deg, #f8fafc 0%, #dbe4f0 52%, #9fb1c7 100%)'
+                          : 'linear-gradient(180deg, #0284c7 0%, #1d4ed8 100%)'
                         : 'transparent',
-                      color: isActive ? '#0f172a' : '#8a94a6',
+                      color: isActive ? (darkModeTheme ? '#070a10' : '#ffffff') : (darkModeTheme ? '#94a3b8' : '#475569'),
                       border: 'none',
                       borderRadius: '9999px',
                       padding: '7px 8px',
@@ -14084,16 +14036,18 @@ export function App() {
                       cursor: 'pointer',
                       whiteSpace: 'nowrap',
                       boxShadow: isActive
-                        ? '0 2px 8px rgba(0, 0, 0, 0.5), inset 0 1px 1px rgba(255, 255, 255, 0.95)'
+                        ? darkModeTheme
+                          ? '0 2px 10px rgba(56, 189, 248, 0.22), inset 0 1px 1px rgba(255, 255, 255, 0.95)'
+                          : '0 2px 10px rgba(37, 99, 235, 0.35)'
                         : 'none',
-                      transition: 'all 0.15s ease'
+                      transition: 'all 0.16s ease'
                     }}
                   >
-                    {isActive && <Icon style={{ width: '13px', height: '13px', flexShrink: 0, color: '#0f172a' }} />}
+                    {isActive && <Icon style={{ width: '13px', height: '13px', flexShrink: 0, color: darkModeTheme ? '#070a10' : '#ffffff' }} />}
                     <span>{tab.label}</span>
                   </button>
                   {idx < arr.length - 1 && !isActive && !isAdjacentToActive && activeTab !== arr[idx + 1].id && (
-                    <div style={{ width: '1px', height: '14px', background: '#262a34', flexShrink: 0 }} />
+                    <div style={{ width: '1px', height: '14px', background: darkModeTheme ? 'rgba(148, 163, 184, 0.2)' : '#cbd5e1', flexShrink: 0 }} />
                   )}
                 </React.Fragment>
               );
@@ -14108,20 +14062,104 @@ export function App() {
           {/* ======================================================== */}
           {activeTab === 'feed' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              {/* Live Feed Sync Status Bar */}
+              <div
+                id="feed-live-sync-strip"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '8px 13px',
+                  borderRadius: '14px',
+                  background: darkModeTheme
+                    ? 'linear-gradient(90deg, rgba(16, 22, 34, 0.95) 0%, rgba(10, 14, 22, 0.98) 100%)'
+                    : 'linear-gradient(90deg, #ffffff 0%, #f1f5f9 100%)',
+                  border: darkModeTheme ? '1px solid rgba(56, 189, 248, 0.24)' : '1px solid #cbd5e1',
+                  boxShadow: darkModeTheme ? '0 4px 16px rgba(0, 0, 0, 0.4)' : '0 2px 8px rgba(15, 23, 42, 0.05)'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span
+                    className="live-blue-pulse-dot"
+                    style={{
+                      width: '8px',
+                      height: '8px',
+                      borderRadius: '50%',
+                      background: '#38bdf8',
+                      display: 'inline-block',
+                      flexShrink: 0
+                    }}
+                  />
+                  <span
+                    style={{
+                      fontSize: '10.5px',
+                      fontFamily: 'monospace',
+                      fontWeight: 800,
+                      letterSpacing: '0.6px',
+                      color: darkModeTheme ? '#e2e8f0' : '#0f172a'
+                    }}
+                  >
+                    LIVE FEED SYNC
+                  </span>
+                  <span
+                    style={{
+                      fontSize: '10px',
+                      fontFamily: 'monospace',
+                      color: '#38bdf8',
+                      padding: '1px 7px',
+                      borderRadius: '999px',
+                      background: darkModeTheme ? 'rgba(56, 189, 248, 0.12)' : '#e0f2fe',
+                      border: '1px solid rgba(56, 189, 248, 0.32)'
+                    }}
+                  >
+                    {posts.length} Active
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    sound.playClick();
+                    setNowTick(Date.now());
+                    triggerToast('⚡ Feed timeline synchronized.');
+                  }}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '5px',
+                    background: darkModeTheme ? 'rgba(37, 99, 235, 0.15)' : '#e0f2fe',
+                    border: '1px solid rgba(56, 189, 248, 0.4)',
+                    borderRadius: '8px',
+                    padding: '4px 10px',
+                    color: darkModeTheme ? '#7dd3fc' : '#0369a1',
+                    fontSize: '10.5px',
+                    fontFamily: 'monospace',
+                    fontWeight: 800,
+                    cursor: 'pointer'
+                  }}
+                >
+                  <RefreshCw style={{ width: '11px', height: '11px' }} />
+                  <span>Sync</span>
+                </button>
+              </div>
               {/* Creator Box */}
               <form
                 id="feed-creator-form"
                 onSubmit={handleCreatePost}
-                className="feed-card-lift tactical-surface"
+                className={darkModeTheme ? 'feed-card-lift tactical-surface' : 'feed-card-lift tactical-surface-light'}
                 style={{
-                  background: '#111317',
-                  border: '1px solid #2d323c',
+                  background: darkModeTheme
+                    ? 'linear-gradient(165deg, #10141d 0%, #090c12 100%)'
+                    : 'linear-gradient(165deg, #ffffff 0%, #f1f5f9 100%)',
+                  border: darkModeTheme ? '1px solid rgba(203, 213, 225, 0.16)' : '1px solid #cbd5e1',
                   borderRadius: '20px',
                   padding: '16px',
                   display: 'flex',
                   flexDirection: 'column',
                   gap: '12px',
-                  boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 8px 24px rgba(0, 0, 0, 0.55)',
+                  boxShadow: darkModeTheme
+                    ? 'inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 10px 28px rgba(0, 0, 0, 0.58)'
+                    : 'inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 8px 22px rgba(15, 23, 42, 0.07)',
                   transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)'
                 }}
               >
@@ -14168,22 +14206,22 @@ export function App() {
                       flex: 1,
                       padding: '12px 14px',
                       borderRadius: '14px',
-                      background: '#0b0c0f',
-                      border: '1px solid #22262f',
-                      color: '#cbd5e1',
+                      background: darkModeTheme ? '#07090e' : '#ffffff',
+                      border: darkModeTheme ? '1px solid rgba(148, 163, 184, 0.2)' : '1px solid #cbd5e1',
+                      color: darkModeTheme ? '#e2e8f0' : '#0f172a',
                       fontSize: '12px',
                       fontFamily: 'monospace',
                       outline: 'none',
                       resize: 'none',
                       boxSizing: 'border-box',
                       lineHeight: 1.5,
-                      boxShadow: 'inset 0 2px 4px rgba(0, 0, 0, 0.65)'
+                      boxShadow: darkModeTheme ? 'inset 0 2px 5px rgba(0, 0, 0, 0.7)' : 'inset 0 1px 3px rgba(15, 23, 42, 0.06)'
                     }}
                   />
                 </div>
 
                 {newPostImage && (
-                  <div style={{ position: 'relative', borderRadius: '12px', overflow: 'hidden', maxHeight: '180px', border: '1px solid #2d323c' }}>
+                  <div style={{ position: 'relative', borderRadius: '12px', overflow: 'hidden', maxHeight: '180px', border: '1px solid rgba(56, 189, 248, 0.35)' }}>
                     <img src={newPostImage} alt="Preview" style={{ width: '100%', maxHeight: '180px', objectFit: 'cover' }} />
                     <button
                       type="button"
@@ -14211,8 +14249,8 @@ export function App() {
 
                 {/* Row: Publishing Info & Add Media Button */}
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <div style={{ fontSize: '11.5px', fontFamily: 'monospace', color: '#9ca3af' }}>
-                    Publishing as: <span style={{ color: '#ffffff', fontWeight: 'bold' }}>{userName}</span>
+                  <div style={{ fontSize: '11.5px', fontFamily: 'monospace', color: darkModeTheme ? '#94a3b8' : '#475569' }}>
+                    Publishing as: <span style={{ color: darkModeTheme ? '#f8fafc' : '#0f172a', fontWeight: 'bold' }}>{userName}</span>
                   </div>
 
                   <button
@@ -14223,17 +14261,17 @@ export function App() {
                       display: 'flex',
                       alignItems: 'center',
                       gap: '6px',
-                      background: '#161920',
-                      border: '1px solid #373e4b',
-                      borderRadius: '8px',
+                      background: darkModeTheme ? '#0d1119' : '#ffffff',
+                      border: darkModeTheme ? '1px solid rgba(203, 213, 225, 0.2)' : '1px solid #cbd5e1',
+                      borderRadius: '9px',
                       padding: '6px 12px',
-                      color: '#e2e8f0',
+                      color: darkModeTheme ? '#e2e8f0' : '#0f172a',
                       fontSize: '11.5px',
                       fontFamily: 'monospace',
                       cursor: 'pointer'
                     }}
                   >
-                    <Camera style={{ width: '14px', height: '14px', color: '#cbd5e1' }} />
+                    <Camera style={{ width: '14px', height: '14px', color: '#38bdf8' }} />
                     <span>Add Media</span>
                   </button>
                   <input
@@ -14275,7 +14313,7 @@ export function App() {
                     opacity: !newPostContent.trim() && !newPostImage ? 0.5 : 1
                   }}
                 >
-                  <Send style={{ width: '14px', height: '14px', transform: 'rotate(-25deg)', color: '#0f172a' }} />
+                  <Send style={{ width: '14px', height: '14px', transform: 'rotate(-25deg)', color: '#070a10' }} />
                   <span>Share Update</span>
                 </button>
               </form>
@@ -14387,15 +14425,19 @@ export function App() {
                 return (
                 <div
                   key={post.id}
-                  className="feed-card-lift tactical-surface"
+                  className={darkModeTheme ? 'feed-card-lift tactical-surface' : 'feed-card-lift tactical-surface-light'}
                   style={{
                     position: 'relative',
                     overflow: 'hidden',
-                    background: '#111317',
-                    border: '1px solid #282d37',
+                    background: darkModeTheme
+                      ? 'linear-gradient(165deg, #10141d 0%, #090c12 100%)'
+                      : 'linear-gradient(165deg, #ffffff 0%, #f1f5f9 100%)',
+                    border: darkModeTheme ? '1px solid rgba(203, 213, 225, 0.14)' : '1px solid #cbd5e1',
                     borderRadius: '20px',
                     padding: '16px',
-                    boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 8px 24px rgba(0, 0, 0, 0.55)',
+                    boxShadow: darkModeTheme
+                      ? 'inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 10px 28px rgba(0, 0, 0, 0.58)'
+                      : 'inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 8px 22px rgba(15, 23, 42, 0.07)',
                     display: 'flex',
                     flexDirection: 'column',
                     gap: '12px',
@@ -14411,9 +14453,9 @@ export function App() {
                         alignItems: 'center',
                         justifyContent: 'space-between',
                         paddingBottom: '8px',
-                        borderBottom: '1px solid #20242f',
+                        borderBottom: darkModeTheme ? '1px solid #1e2432' : '1px solid #e2e8f0',
                         fontSize: '11.5px',
-                        color: '#94a3b8'
+                        color: darkModeTheme ? '#94a3b8' : '#475569'
                       }}
                     >
                       <div
@@ -14433,12 +14475,12 @@ export function App() {
                           />
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
-                          <span style={{ fontWeight: 700, color: '#f8fafc' }}>{displayPostAuthor}</span>
-                          <span style={{ color: '#94a3b8' }}>reposted this</span>
+                          <span style={{ fontWeight: 700, color: darkModeTheme ? '#f8fafc' : '#0f172a' }}>{displayPostAuthor}</span>
+                          <span style={{ color: darkModeTheme ? '#94a3b8' : '#64748b' }}>reposted this</span>
                         </div>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '5px', color: '#64748b', fontSize: '11px' }}>
-                        <Repeat2 style={{ width: '13px', height: '13px', color: '#94a3b8' }} />
+                        <Repeat2 style={{ width: '13px', height: '13px', color: '#38bdf8' }} />
                         <span>{formatRelativeTime(post, nowTick)}</span>
                       </div>
                     </div>
@@ -14474,8 +14516,9 @@ export function App() {
                               width: '9px',
                               height: '9px',
                               borderRadius: '50%',
-                              backgroundColor: '#10b981',
-                              border: '1.5px solid #0f172a'
+                              backgroundColor: '#38bdf8',
+                              boxShadow: '0 0 6px rgba(56, 189, 248, 0.75)',
+                              border: darkModeTheme ? '1.5px solid #090c12' : '1.5px solid #ffffff'
                             }}
                           />
                         </div>
@@ -14486,7 +14529,7 @@ export function App() {
                                 fontSize: '14px',
                                 fontWeight: 'bold',
                                 fontFamily: "'Space Grotesk', -apple-system, sans-serif",
-                                color: '#ffffff'
+                                color: darkModeTheme ? '#f8fafc' : '#0f172a'
                               }}
                             >
                               {displayPostAuthor}
@@ -14494,9 +14537,9 @@ export function App() {
                             <span
                               className="tactical-capsule-badge"
                               style={{
-                                background: '#161820',
-                                border: '1px solid #2d3340',
-                                color: '#cbd5e1',
+                                background: darkModeTheme ? 'rgba(15, 23, 42, 0.85)' : '#e2e8f0',
+                                border: darkModeTheme ? '1px solid rgba(148, 163, 184, 0.25)' : '1px solid #cbd5e1',
+                                color: darkModeTheme ? '#cbd5e1' : '#334155',
                                 padding: '2px 8px',
                                 borderRadius: '6px',
                                 fontFamily: 'monospace',
@@ -14506,9 +14549,9 @@ export function App() {
                               {displayPostBadge || (isMyOwnPost ? 'Founder | CPO CHIXUS System' : 'Certified Operator')}
                             </span>
                           </div>
-                          <div style={{ fontSize: '11px', fontFamily: 'monospace', color: '#9ca3af', marginTop: '2px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          <div style={{ fontSize: '11px', fontFamily: 'monospace', color: darkModeTheme ? '#94a3b8' : '#64748b', marginTop: '2px', display: 'flex', alignItems: 'center', gap: '4px' }}>
                             <span>{formatRelativeTime(post, nowTick)} • </span>
-                            <Globe style={{ width: '11px', height: '11px', color: '#828c9b' }} />
+                            <Globe style={{ width: '11px', height: '11px', color: '#38bdf8' }} />
                           </div>
                         </div>
                       </div>
@@ -14525,9 +14568,9 @@ export function App() {
                             title="Your Post • Tap here to manage"
                             className="tactical-emerald-capsule"
                             style={{
-                              background: 'rgba(16, 185, 129, 0.12)',
-                              border: '1px solid rgba(52, 211, 153, 0.4)',
-                              color: '#34d399',
+                              background: darkModeTheme ? 'rgba(37, 99, 235, 0.16)' : '#e0f2fe',
+                              border: '1px solid rgba(56, 189, 248, 0.45)',
+                              color: darkModeTheme ? '#7dd3fc' : '#0369a1',
                               padding: '3px 10px',
                               borderRadius: '9999px',
                               fontSize: '11px',
@@ -14544,9 +14587,9 @@ export function App() {
                             onClick={() => openPeerProfile(displayPostAuthor, post.authorId)}
                             className="tactical-emerald-capsule"
                             style={{
-                              background: 'rgba(16, 185, 129, 0.12)',
-                              border: '1px solid rgba(52, 211, 153, 0.4)',
-                              color: '#34d399',
+                              background: darkModeTheme ? 'rgba(37, 99, 235, 0.16)' : '#e0f2fe',
+                              border: '1px solid rgba(56, 189, 248, 0.45)',
+                              color: darkModeTheme ? '#7dd3fc' : '#0369a1',
                               padding: '3px 10px',
                               borderRadius: '9999px',
                               fontSize: '11px',
@@ -14564,7 +14607,7 @@ export function App() {
 
                   {/* Post Content */}
                   {safeTrim(post.content) && (
-                    <div style={{ fontSize: '13.5px', fontFamily: 'monospace', lineHeight: 1.5, color: '#f1f5f9', whiteSpace: 'pre-wrap' }}>
+                    <div style={{ fontSize: '13.5px', fontFamily: 'monospace', lineHeight: 1.5, color: darkModeTheme ? '#f1f5f9' : '#0f172a', whiteSpace: 'pre-wrap' }}>
                       {post.content}
                     </div>
                   )}
@@ -14573,9 +14616,9 @@ export function App() {
                   {post.resharedPost ? (
                     <div
                       style={{
-                        border: '1px solid #232733',
+                        border: darkModeTheme ? '1px solid rgba(148, 163, 184, 0.18)' : '1px solid #cbd5e1',
                         borderRadius: '12px',
-                        background: '#0c0e12',
+                        background: darkModeTheme ? '#07090e' : '#f8fafc',
                         overflow: 'hidden',
                         display: 'flex',
                         flexDirection: 'column'
@@ -14609,7 +14652,7 @@ export function App() {
                           </div>
                           <div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-                              <span style={{ fontSize: '13px', fontWeight: 700, color: '#ffffff' }}>
+                              <span style={{ fontSize: '13px', fontWeight: 700, color: darkModeTheme ? '#ffffff' : '#0f172a' }}>
                                 {displayReshareAuthor}
                               </span>
                               <span style={{ fontSize: '10px', color: '#94a3b8' }}>• 1st</span>
@@ -14634,7 +14677,7 @@ export function App() {
                             padding: '4px 14px 12px',
                             fontSize: '13px',
                             lineHeight: 1.5,
-                            color: '#e2e8f0',
+                            color: darkModeTheme ? '#e2e8f0' : '#1e293b',
                             whiteSpace: 'pre-wrap'
                           }}
                         >
@@ -14649,7 +14692,7 @@ export function App() {
                             width: '100%',
                             maxHeight: '300px',
                             overflow: 'hidden',
-                            borderTop: '1px solid #1e2433',
+                            borderTop: darkModeTheme ? '1px solid #1e2433' : '1px solid #cbd5e1',
                             background: '#090c12',
                             cursor: 'zoom-in'
                           }}
@@ -14671,7 +14714,7 @@ export function App() {
                   ) : (
                     post.postMedia && (
                       <div
-                        style={{ borderRadius: '10px', overflow: 'hidden', maxHeight: '260px', cursor: 'zoom-in', border: '1px solid #232731' }}
+                        style={{ borderRadius: '10px', overflow: 'hidden', maxHeight: '260px', cursor: 'zoom-in', border: darkModeTheme ? '1px solid rgba(203, 213, 225, 0.14)' : '1px solid #cbd5e1' }}
                         onClick={() => setLightboxImage({ url: post.postMedia!, title: `Post by ${displayPostAuthor}` })}
                       >
                         <img src={post.postMedia} alt="Media" style={{ width: '100%', maxHeight: '260px', objectFit: 'cover', display: 'block' }} />
@@ -14679,13 +14722,13 @@ export function App() {
                     )
                   )}
 
-                  {/* Actions Bar: Verify (pill), Comments (pill), Share icon */}
+                  {/* Actions Bar: Industrial Endorse Icon + Count, Comments, Share */}
                   <div
                     style={{
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
-                      borderTop: '1px solid #20242e',
+                      borderTop: darkModeTheme ? '1px solid rgba(148, 163, 184, 0.15)' : '1px solid #e2e8f0',
                       paddingTop: '12px',
                       fontSize: '12px',
                       fontFamily: 'monospace'
@@ -14694,32 +14737,38 @@ export function App() {
                     <button
                       type="button"
                       onClick={() => handleToggleLike(post.id)}
-                      title={post.verified ? "Verified by you" : "Verify this post"}
+                      title={post.verified ? 'Endorsed by you' : 'Endorse this post'}
+                      aria-label={`Endorse post (${formatNumber(post.verifications)})`}
                       className="tactical-action-btn"
                       style={{
                         display: 'inline-flex',
                         alignItems: 'center',
                         gap: '6px',
-                        background: post.verified ? '#1a202a' : '#161820',
-                        border: post.verified ? '1px solid #34d399' : '1px solid #2b313d',
-                        borderRadius: '8px',
-                        color: post.verified ? '#34d399' : '#d1d5db',
+                        background: post.verified
+                          ? (darkModeTheme ? 'rgba(37, 99, 235, 0.2)' : '#e0f2fe')
+                          : (darkModeTheme ? '#0d1119' : '#ffffff'),
+                        border: post.verified
+                          ? '1px solid #38bdf8'
+                          : (darkModeTheme ? '1px solid rgba(203, 213, 225, 0.18)' : '1px solid #cbd5e1'),
+                        borderRadius: '9px',
+                        color: post.verified ? (darkModeTheme ? '#7dd3fc' : '#0284c7') : (darkModeTheme ? '#cbd5e1' : '#334155'),
                         cursor: 'pointer',
-                        padding: '6px 14px',
+                        padding: '6px 13px',
+                        boxShadow: post.verified ? '0 0 12px rgba(56, 189, 248, 0.22)' : 'none',
                         transition: 'all 0.15s ease'
                       }}
                     >
-                      <CheckCircle2
+                      <ShieldCheck
                         style={{
-                          width: '15px',
-                          height: '15px',
-                          color: '#10b981',
+                          width: '16px',
+                          height: '16px',
+                          color: post.verified ? '#38bdf8' : (darkModeTheme ? '#94a3b8' : '#475569'),
                           display: 'inline-block',
                           verticalAlign: 'middle',
                           flexShrink: 0
                         }}
                       />
-                      <span style={{ fontSize: '11.5px', fontWeight: 600 }}>Verify ({formatNumber(post.verifications)})</span>
+                      <span style={{ fontSize: '11.5px', fontWeight: 700 }}>{formatNumber(post.verifications)}</span>
                     </button>
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -14735,16 +14784,20 @@ export function App() {
                           display: 'flex',
                           alignItems: 'center',
                           gap: '6px',
-                          background: expandedComments[post.id] ? '#1a202a' : '#161820',
-                          border: expandedComments[post.id] ? '1px solid #3e4657' : '1px solid #2b313d',
-                          borderRadius: '8px',
+                          background: expandedComments[post.id]
+                            ? (darkModeTheme ? '#141b27' : '#e2e8f0')
+                            : (darkModeTheme ? '#0d1119' : '#ffffff'),
+                          border: expandedComments[post.id]
+                            ? '1px solid rgba(56, 189, 248, 0.45)'
+                            : (darkModeTheme ? '1px solid rgba(203, 213, 225, 0.18)' : '1px solid #cbd5e1'),
+                          borderRadius: '9px',
                           padding: '6px 14px',
-                          color: '#d1d5db',
+                          color: darkModeTheme ? '#cbd5e1' : '#334155',
                           cursor: 'pointer',
                           fontSize: '11.5px'
                         }}
                       >
-                        <MessageSquare style={{ width: '15px', height: '15px', color: '#9ca3af' }} />
+                        <MessageSquare style={{ width: '15px', height: '15px', color: expandedComments[post.id] ? '#38bdf8' : '#94a3b8' }} />
                         <span>{post.comments.length} Comments</span>
                       </button>
 
@@ -14761,11 +14814,11 @@ export function App() {
                           justifyContent: 'center',
                           background: 'transparent',
                           border: 'none',
-                          color: '#9ca3af',
+                          color: darkModeTheme ? '#94a3b8' : '#475569',
                           cursor: 'pointer',
                           padding: '6px'
                         }}
-                        title="Share transmission"
+                        title="Share or manage post"
                       >
                         <Share2 style={{ width: '16px', height: '16px' }} />
                       </button>
@@ -14980,7 +15033,7 @@ export function App() {
                                   <img
                                     src={commentAvatar}
                                     alt={authorPart}
-                                    onClick={() => openPeerProfile(authorPart)}
+                                    onClick={() => openPeerProfile(authorPart, isMyComment ? getMyActiveNodeId() : undefined)}
                                     style={{
                                       width: '22px',
                                       height: '22px',
@@ -14996,7 +15049,7 @@ export function App() {
                                   <div style={{ flex: 1, minWidth: 0, lineHeight: 1.4 }}>
                                     <button
                                       type="button"
-                                      onClick={() => openPeerProfile(authorPart)}
+                                      onClick={() => openPeerProfile(authorPart, isMyComment ? getMyActiveNodeId() : undefined)}
                                       style={{
                                         background: 'none',
                                         border: 'none',
@@ -17956,7 +18009,13 @@ export function App() {
                                   alt={c.name}
                                   onClick={(e: any) => {
                                     e.stopPropagation();
-                                    openPeerProfile(c.name);
+                                    const cNodeId =
+                                      c.id === CHIXUS_AI_BOT_ID
+                                        ? CHIXUS_AI_BOT_ID
+                                        : c.id.startsWith('c-')
+                                        ? c.id.slice(2)
+                                        : undefined;
+                                    openPeerProfile(c.name, cNodeId);
                                   }}
                                   title={`View ${c.name}'s Dossier`}
                                   style={{
@@ -18103,150 +18162,233 @@ export function App() {
                     boxShadow: '0 4px 20px rgba(0,0,0,0.3)'
                   }}
                 >
-                  {/* Chat Top Nav Bar with Back button (Clear Chat & Delete Chat hidden as requested) */}
+                  {/* Chat Top Nav Bar + Live Qorvex Cover Banner */}
                   {(() => {
                     const currentContact = contacts.find((c) => c.id === activeContactId) || contacts[0];
                     if (!currentContact) return null;
+                    const isQorvexChannel =
+                      currentContact.id === CHIXUS_AI_BOT_ID ||
+                      currentContact.name === 'Qorvex' ||
+                      currentContact.name === 'Qordex' ||
+                      currentContact.name === 'CHIXUS AI';
                     return (
-                      <div
-                        style={{
-                          padding: '10px 14px',
-                          background: '#11131a',
-                          borderBottom: '1px solid #232634',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between'
-                        }}
-                      >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              sound.playClick();
-                              setIsChatOpen(false);
-                            }}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '4px',
-                              background: '#1c1f2a',
-                              border: '1px solid #2b3040',
-                              borderRadius: '8px',
-                              padding: '5px 8px',
-                              color: '#ffffff',
-                              fontSize: '11px',
-                              fontFamily: 'monospace',
-                              cursor: 'pointer'
-                            }}
-                            title="Back to all message channels"
-                          >
-                            <ArrowLeft style={{ width: '13px', height: '13px' }} />
-                            <span>Messages</span>
-                          </button>
-
-                          <div
-                            style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}
-                            onClick={() => openPeerProfile(currentContact.name)}
-                            title={`View ${currentContact.name}'s profile`}
-                          >
-                            <div style={{ position: 'relative' }}>
-                              <img
-                                src={currentContact.id === CHIXUS_AI_BOT_ID || currentContact.name === 'Qorvex' || currentContact.name === 'Qordex' || currentContact.name === 'CHIXUS AI' ? CHIXUS_AI_BOT_AVATAR : (currentContact.avatar || CHIXUS_AI_BOT_AVATAR)}
-                                alt={currentContact.name}
-                                style={{
-                                  width: '32px',
-                                  height: '32px',
-                                  borderRadius: '50%',
-                                  objectFit: 'cover',
-                                  border: '1.5px solid #38bdf8'
-                                }}
-                              />
-                              <span
-                                style={{
-                                  position: 'absolute',
-                                  bottom: 0,
-                                  right: 0,
-                                  width: '7px',
-                                  height: '7px',
-                                  borderRadius: '50%',
-                                  backgroundColor: currentContact.isBlocked
-                                    ? '#ef4444'
-                                    : isUserTrulyOnline(currentContact)
-                                    ? '#10b981'
-                                    : '#64748b',
-                                  border: '1.5px solid #11131a'
-                                }}
-                              />
-                            </div>
-                            <div>
-                              <div
-                                style={{
-                                  fontSize: '12px',
-                                  fontWeight: 'bold',
-                                  fontFamily: 'monospace',
-                                  color: '#ffffff',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: '5px'
-                                }}
-                              >
-                                <span>{currentContact.name}</span>
-                                {currentContact.isBlocked && (
-                                  <span style={{ fontSize: '9px', color: '#f87171', background: 'rgba(239, 68, 68, 0.15)', padding: '1px 5px', borderRadius: '4px' }}>
-                                    Blocked
-                                  </span>
-                                )}
-                              </div>
-                              {(() => {
-                                const isPeerOnline = isUserTrulyOnline(currentContact);
-                                return (
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px' }}>
-                                    <span
-                                      style={{
-                                        width: '6px',
-                                        height: '6px',
-                                        borderRadius: '50%',
-                                        backgroundColor: isPeerOnline ? '#22c55e' : '#64748b',
-                                        boxShadow: isPeerOnline ? '0 0 6px rgba(34, 197, 94, 0.6)' : 'none'
-                                      }}
-                                    />
-                                    <span
-                                      style={{
-                                        fontSize: '9.5px',
-                                        color: isPeerOnline ? '#22c55e' : '#94a3b8',
-                                        fontFamily: 'monospace',
-                                        fontWeight: 'bold'
-                                      }}
-                                    >
-                                      {isPeerOnline ? 'Online' : 'Offline'}
-                                    </span>
-                                  </div>
-                                );
-                              })()}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                          {currentContact.id !== CHIXUS_AI_BOT_ID && (
+                      <div style={{ display: 'flex', flexDirection: 'column' }}>
+                        <div
+                          style={{
+                            padding: '10px 14px',
+                            background: '#0b0e14',
+                            borderBottom: '1px solid rgba(203, 213, 225, 0.14)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between'
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                             <button
                               type="button"
-                              onClick={() => openPeerProfile(currentContact.name)}
+                              onClick={() => {
+                                sound.playClick();
+                                setIsChatOpen(false);
+                              }}
                               style={{
-                                background: 'none',
-                                border: '1px solid #38bdf8',
-                                borderRadius: '6px',
-                                padding: '4px 8px',
-                                color: '#38bdf8',
-                                fontSize: '9px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                background: '#111622',
+                                border: '1px solid rgba(203, 213, 225, 0.2)',
+                                borderRadius: '8px',
+                                padding: '5px 8px',
+                                color: '#ffffff',
+                                fontSize: '11px',
                                 fontFamily: 'monospace',
                                 cursor: 'pointer'
                               }}
+                              title="Back to all message channels"
                             >
-                              Profile ↗
+                              <ArrowLeft style={{ width: '13px', height: '13px' }} />
+                              <span>Messages</span>
                             </button>
-                          )}
+
+                            <div
+                              style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}
+                              onClick={() => {
+                                const cNodeId = isQorvexChannel
+                                  ? CHIXUS_AI_BOT_ID
+                                  : currentContact.id.startsWith('c-')
+                                  ? currentContact.id.slice(2)
+                                  : undefined;
+                                openPeerProfile(currentContact.name, cNodeId);
+                              }}
+                              title={`View ${currentContact.name}'s profile`}
+                            >
+                              <div style={{ position: 'relative' }}>
+                                <img
+                                  src={isQorvexChannel ? CHIXUS_AI_BOT_AVATAR : (currentContact.avatar || CHIXUS_AI_BOT_AVATAR)}
+                                  alt={currentContact.name}
+                                  style={{
+                                    width: '32px',
+                                    height: '32px',
+                                    borderRadius: '50%',
+                                    objectFit: 'cover',
+                                    border: '1.5px solid #38bdf8'
+                                  }}
+                                />
+                                <span
+                                  style={{
+                                    position: 'absolute',
+                                    bottom: 0,
+                                    right: 0,
+                                    width: '7px',
+                                    height: '7px',
+                                    borderRadius: '50%',
+                                    backgroundColor: currentContact.isBlocked
+                                      ? '#ef4444'
+                                      : isUserTrulyOnline(currentContact)
+                                      ? '#38bdf8'
+                                      : '#64748b',
+                                    border: '1.5px solid #0b0e14'
+                                  }}
+                                />
+                              </div>
+                              <div>
+                                <div
+                                  style={{
+                                    fontSize: '12px',
+                                    fontWeight: 'bold',
+                                    fontFamily: 'monospace',
+                                    color: '#ffffff',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '5px'
+                                  }}
+                                >
+                                  <span>{currentContact.name}</span>
+                                  {currentContact.isBlocked && (
+                                    <span style={{ fontSize: '9px', color: '#f87171', background: 'rgba(239, 68, 68, 0.15)', padding: '1px 5px', borderRadius: '4px' }}>
+                                      Blocked
+                                    </span>
+                                  )}
+                                </div>
+                                {(() => {
+                                  const isPeerOnline = isUserTrulyOnline(currentContact);
+                                  return (
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px' }}>
+                                      <span
+                                        className={isPeerOnline ? 'live-blue-pulse-dot' : undefined}
+                                        style={{
+                                          width: '6px',
+                                          height: '6px',
+                                          borderRadius: '50%',
+                                          backgroundColor: isPeerOnline ? '#38bdf8' : '#64748b'
+                                        }}
+                                      />
+                                      <span
+                                        style={{
+                                          fontSize: '9.5px',
+                                          color: isPeerOnline ? '#7dd3fc' : '#94a3b8',
+                                          fontFamily: 'monospace',
+                                          fontWeight: 'bold'
+                                        }}
+                                      >
+                                        {isQorvexChannel ? 'Live Neural Core' : isPeerOnline ? 'Online' : 'Offline'}
+                                      </span>
+                                    </div>
+                                  );
+                                })()}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            {currentContact.id !== CHIXUS_AI_BOT_ID && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const cNodeId = currentContact.id.startsWith('c-')
+                                    ? currentContact.id.slice(2)
+                                    : undefined;
+                                  openPeerProfile(currentContact.name, cNodeId);
+                                }}
+                                style={{
+                                  background: 'none',
+                                  border: '1px solid #38bdf8',
+                                  borderRadius: '6px',
+                                  padding: '4px 8px',
+                                  color: '#38bdf8',
+                                  fontSize: '9px',
+                                  fontFamily: 'monospace',
+                                  cursor: 'pointer'
+                                }}
+                              >
+                                Profile ↗
+                              </button>
+                            )}
+                          </div>
                         </div>
+
+                        {isQorvexChannel && (
+                          <div
+                            id="qorvex-live-cover-banner"
+                            onClick={() => openPeerProfile('Qorvex', CHIXUS_AI_BOT_ID)}
+                            title="Tap to open Qorvex profile & full cover photo"
+                            style={{
+                              position: 'relative',
+                              height: '74px',
+                              width: '100%',
+                              overflow: 'hidden',
+                              cursor: 'pointer',
+                              borderBottom: '1px solid rgba(56, 189, 248, 0.25)',
+                              background: '#070a10'
+                            }}
+                          >
+                            <img
+                              src={QORVEX_COVER_IMAGE}
+                              alt="Qorvex Cover"
+                              style={{
+                                width: '100%',
+                                height: '100%',
+                                objectFit: 'cover',
+                                objectPosition: 'center 42%',
+                                opacity: 0.72,
+                                display: 'block'
+                              }}
+                            />
+                            <div
+                              style={{
+                                position: 'absolute',
+                                inset: 0,
+                                background: 'linear-gradient(90deg, rgba(7, 10, 16, 0.92) 0%, rgba(7, 10, 16, 0.45) 55%, rgba(7, 10, 16, 0.88) 100%)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                padding: '0 14px'
+                              }}
+                            >
+                              <div>
+                                <div style={{ fontSize: '11px', fontWeight: 900, fontFamily: 'monospace', color: '#f8fafc', letterSpacing: '0.8px' }}>
+                                  QORVEX // NEURAL CORE
+                                </div>
+                                <div style={{ fontSize: '9.5px', fontFamily: 'monospace', color: '#7dd3fc', marginTop: '2px' }}>
+                                  Think Deeper • Build Smarter • Live Diagnostics
+                                </div>
+                              </div>
+                              <span
+                                style={{
+                                  fontSize: '9.5px',
+                                  fontFamily: 'monospace',
+                                  fontWeight: 800,
+                                  color: '#e2e8f0',
+                                  background: 'rgba(13, 17, 25, 0.82)',
+                                  border: '1px solid rgba(56, 189, 248, 0.45)',
+                                  borderRadius: '999px',
+                                  padding: '3px 9px'
+                                }}
+                              >
+                                Profile ↗
+                              </span>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })()}
@@ -18348,7 +18490,14 @@ export function App() {
                               <img
                                 src={peerAvatar}
                                 alt={activePeer?.name || 'Operator'}
-                                onClick={() => openPeerProfile(activePeer?.name || 'Operator')}
+                                onClick={() => {
+                                  const pNodeId = isAi
+                                    ? CHIXUS_AI_BOT_ID
+                                    : activePeer?.id?.startsWith('c-')
+                                    ? activePeer.id.slice(2)
+                                    : undefined;
+                                  openPeerProfile(activePeer?.name || 'Operator', pNodeId);
+                                }}
                                 style={{
                                   width: '58px',
                                   height: '58px',
@@ -18411,7 +18560,12 @@ export function App() {
                             {!isAi && (
                               <button
                                 type="button"
-                                onClick={() => openPeerProfile(activePeer?.name || 'Operator')}
+                                onClick={() => {
+                                  const pNodeId = activePeer?.id?.startsWith('c-')
+                                    ? activePeer.id.slice(2)
+                                    : undefined;
+                                  openPeerProfile(activePeer?.name || 'Operator', pNodeId);
+                                }}
                                 style={{
                                   marginTop: '8px',
                                   background: 'rgba(56, 189, 248, 0.1)',
@@ -18487,7 +18641,14 @@ export function App() {
                               }}
                               onClick={(e: any) => {
                                 e.stopPropagation();
-                                openPeerProfile(msgAuthor);
+                                const targetId = isMe
+                                  ? getMyActiveNodeId()
+                                  : isAi
+                                  ? CHIXUS_AI_BOT_ID
+                                  : activePeer?.id?.startsWith('c-')
+                                  ? activePeer.id.slice(2)
+                                  : undefined;
+                                openPeerProfile(msgAuthor, targetId);
                               }}
                               title={`View ${msgAuthor}'s profile`}
                             />
@@ -18810,18 +18971,98 @@ export function App() {
                 })()}
                     {isChixusAiTyping && activeContactId === CHIXUS_AI_BOT_ID && (
                       <div
+                        id="qorvex-live-thinking-panel"
                         style={{
                           alignSelf: 'flex-start',
-                          padding: '8px 12px',
-                          borderRadius: '12px',
-                          background: '#1a1d26',
-                          border: '1px solid rgba(56, 189, 248, 0.35)',
-                          color: '#38bdf8',
-                          fontSize: '11px',
-                          fontFamily: 'monospace'
+                          maxWidth: '92%',
+                          padding: '12px 14px',
+                          borderRadius: '14px',
+                          background: 'linear-gradient(150deg, #101521 0%, #090c12 100%)',
+                          border: '1px solid rgba(56, 189, 248, 0.42)',
+                          boxShadow: '0 8px 24px rgba(0, 0, 0, 0.45), 0 0 18px rgba(37, 99, 235, 0.14)',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '8px'
                         }}
                       >
-                        Qorvex is thinking...
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <Loader2
+                            className="animate-spin"
+                            style={{ width: '14px', height: '14px', color: '#38bdf8', flexShrink: 0 }}
+                          />
+                          <span style={{ fontSize: '11px', fontWeight: 900, fontFamily: 'monospace', color: '#f8fafc', letterSpacing: '0.4px' }}>
+                            Qorvex is thinking live...
+                          </span>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                          {(qorvexThinkingSteps.length > 0
+                            ? qorvexThinkingSteps
+                            : [
+                                {
+                                  id: 'fallback-1',
+                                  label: 'Analyzing prompt & system telemetry',
+                                  detail: 'Preparing response...',
+                                  status: 'active' as const
+                                }
+                              ]
+                          ).map((step) => (
+                            <div
+                              key={step.id}
+                              className="qorvex-step-row"
+                              style={{
+                                display: 'flex',
+                                alignItems: 'flex-start',
+                                gap: '8px',
+                                opacity: step.status === 'pending' ? 0.5 : 1,
+                                transition: 'opacity 0.2s ease'
+                              }}
+                            >
+                              <div style={{ marginTop: '2px', flexShrink: 0 }}>
+                                {step.status === 'done' ? (
+                                  <CheckCircle2 style={{ width: '13px', height: '13px', color: '#7dd3fc' }} />
+                                ) : step.status === 'active' ? (
+                                  <span
+                                    className="live-blue-pulse-dot"
+                                    style={{
+                                      width: '9px',
+                                      height: '9px',
+                                      borderRadius: '50%',
+                                      background: '#38bdf8',
+                                      display: 'inline-block',
+                                      margin: '2px'
+                                    }}
+                                  />
+                                ) : (
+                                  <span
+                                    style={{
+                                      width: '7px',
+                                      height: '7px',
+                                      borderRadius: '50%',
+                                      background: '#475569',
+                                      display: 'inline-block',
+                                      margin: '3px'
+                                    }}
+                                  />
+                                )}
+                              </div>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '1px' }}>
+                                <span
+                                  style={{
+                                    fontSize: '10.5px',
+                                    fontFamily: 'monospace',
+                                    fontWeight: step.status === 'active' ? 800 : 600,
+                                    color: step.status === 'active' ? '#7dd3fc' : step.status === 'done' ? '#e2e8f0' : '#94a3b8'
+                                  }}
+                                >
+                                  {step.label}
+                                </span>
+                                <span style={{ fontSize: '9.5px', fontFamily: 'monospace', color: '#94a3b8' }}>
+                                  {step.detail}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     )}
                     </div>
@@ -21666,36 +21907,7 @@ export function App() {
             </div>
 
               {/* Drawer Bottom Quick Actions */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px', paddingTop: '12px', borderTop: '1px solid rgba(255, 255, 255, 0.1)' }}>
-                <button
-                  type="button"
-                  id="dossier-launch-inspector-btn"
-                  onClick={() => {
-                    sound.playClick();
-                    setActiveTab('inspect');
-                    setIsDossierDrawerOpen(false);
-                    setIsSideDrawerOpen(false);
-                  }}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '10px',
-                    padding: '10px 12px',
-                    borderRadius: '8px',
-                    background: 'rgba(56, 189, 248, 0.12)',
-                    border: '1px solid rgba(56, 189, 248, 0.35)',
-                    color: '#38bdf8',
-                    fontSize: '12px',
-                    fontFamily: 'monospace',
-                    fontWeight: 'bold',
-                    cursor: 'pointer',
-                    textAlign: 'left'
-                  }}
-                >
-                  <Cpu style={{ width: '16px', height: '16px' }} />
-                  <span>Launch Circuit Solder Inspector</span>
-                </button>
-
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px', paddingTop: '12px', borderTop: '1px solid rgba(203, 213, 225, 0.14)' }}>
                 <button
                   type="button"
                   id="dossier-drawer-settings-btn"
@@ -21710,10 +21922,10 @@ export function App() {
                     alignItems: 'center',
                     gap: '10px',
                     padding: '10px 12px',
-                    borderRadius: '8px',
-                    background: 'rgba(56, 189, 248, 0.1)',
-                    border: '1px solid rgba(56, 189, 248, 0.3)',
-                    color: '#38bdf8',
+                    borderRadius: '10px',
+                    background: 'rgba(37, 99, 235, 0.14)',
+                    border: '1px solid rgba(56, 189, 248, 0.4)',
+                    color: '#7dd3fc',
                     fontSize: '12px',
                     fontFamily: 'monospace',
                     fontWeight: 'bold',
@@ -21739,10 +21951,10 @@ export function App() {
                     alignItems: 'center',
                     gap: '10px',
                     padding: '10px 12px',
-                    borderRadius: '8px',
-                    background: 'rgba(16, 185, 129, 0.1)',
-                    border: '1px solid rgba(16, 185, 129, 0.3)',
-                    color: '#34d399',
+                    borderRadius: '10px',
+                    background: 'rgba(203, 213, 225, 0.08)',
+                    border: '1px solid rgba(203, 213, 225, 0.25)',
+                    color: '#e2e8f0',
                     fontSize: '12px',
                     fontFamily: 'monospace',
                     fontWeight: 'bold',
@@ -21750,35 +21962,8 @@ export function App() {
                     textAlign: 'left'
                   }}
                 >
-                  <HelpCircle style={{ width: '16px', height: '16px', color: '#34d399' }} />
+                  <HelpCircle style={{ width: '16px', height: '16px', color: '#cbd5e1' }} />
                   <span>Help Center & Guides</span>
-                </button>
-
-                <button
-                  type="button"
-                  id="dossier-drawer-logout-btn"
-                  onClick={() => {
-                    sound.playClick();
-                    setShowLogoutConfirmModal(true);
-                  }}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '10px',
-                    padding: '10px 12px',
-                    borderRadius: '8px',
-                    background: 'rgba(239, 68, 68, 0.12)',
-                    border: '1px solid rgba(239, 68, 68, 0.35)',
-                    color: '#fca5a5',
-                    fontSize: '12px',
-                    fontFamily: 'monospace',
-                    fontWeight: 'bold',
-                    cursor: 'pointer',
-                    textAlign: 'left'
-                  }}
-                >
-                  <LogOut style={{ width: '16px', height: '16px', color: '#f87171' }} />
-                  <span>Logout / Lock Node</span>
                 </button>
               </div>
             </div>
@@ -24489,8 +24674,8 @@ export function App() {
                           width: '12px',
                           height: '12px',
                           borderRadius: '50%',
-                          backgroundColor: '#10b981',
-                          border: '2px solid #0f172a'
+                          backgroundColor: '#38bdf8',
+                          border: '2px solid #090c12'
                         }}
                       />
                       {/* Interactive Change Avatar Camera Button */}
@@ -24592,8 +24777,8 @@ export function App() {
                       display: 'grid',
                       gridTemplateColumns: 'repeat(3, 1fr)',
                       gap: '6px',
-                      background: darkModeTheme ? '#111622' : '#f1f5f9',
-                      border: darkModeTheme ? '1px solid #1e293b' : '1px solid #cbd5e1',
+                      background: darkModeTheme ? '#0d1119' : '#f1f5f9',
+                      border: darkModeTheme ? '1px solid rgba(203, 213, 225, 0.16)' : '1px solid #cbd5e1',
                       borderRadius: '8px',
                       padding: '8px',
                       textAlign: 'center'
@@ -24606,13 +24791,13 @@ export function App() {
                       <div style={{ fontSize: '8px', color: '#94a3b8', fontFamily: 'monospace' }}>Inspections</div>
                     </div>
                     <div>
-                      <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#fb7185', fontFamily: 'monospace' }}>
+                      <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#e2e8f0', fontFamily: 'monospace' }}>
                         {formatNumber(peer.faultsIsolated)}
                       </div>
                       <div style={{ fontSize: '8px', color: '#94a3b8', fontFamily: 'monospace' }}>Faults Isolated</div>
                     </div>
                     <div>
-                      <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#10b981', fontFamily: 'monospace' }}>
+                      <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#7dd3fc', fontFamily: 'monospace' }}>
                         {peer.aiScanAccuracy}
                       </div>
                       <div style={{ fontSize: '8px', color: '#94a3b8', fontFamily: 'monospace' }}>AI Accuracy</div>
@@ -24629,9 +24814,9 @@ export function App() {
                         padding: '8px 12px',
                         borderRadius: '8px',
                         background: peer.isConnected
-                          ? 'linear-gradient(135deg, #059669 0%, #047857 100%)'
+                          ? 'linear-gradient(135deg, #1d4ed8 0%, #0284c7 100%)'
                           : 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
-                        border: 'none',
+                        border: '1px solid rgba(56, 189, 248, 0.45)',
                         color: '#ffffff',
                         fontSize: '11px',
                         fontWeight: 'bold',
@@ -24850,21 +25035,22 @@ export function App() {
                               <button
                                 type="button"
                                 onClick={() => handleToggleLike(p.id)}
-                                title={p.verified ? "Verified by you" : "Verify this post"}
+                                title={p.verified ? 'Endorsed by you' : 'Endorse this post'}
+                                aria-label={`Endorse post (${p.verifications})`}
                                 style={{
                                   display: 'inline-flex',
                                   alignItems: 'center',
                                   gap: '5px',
-                                  background: p.verified ? 'rgba(56, 189, 248, 0.12)' : 'rgba(255, 255, 255, 0.04)',
-                                  border: p.verified ? '1px solid rgba(56, 189, 248, 0.4)' : '1px solid rgba(255, 255, 255, 0.08)',
-                                  borderRadius: '5px',
+                                  background: p.verified ? 'rgba(56, 189, 248, 0.16)' : 'rgba(255, 255, 255, 0.04)',
+                                  border: p.verified ? '1px solid #38bdf8' : '1px solid rgba(203, 213, 225, 0.2)',
+                                  borderRadius: '6px',
                                   color: p.verified ? '#38bdf8' : 'inherit',
                                   cursor: 'pointer',
                                   fontSize: '10px',
-                                  padding: '3px 6px'
+                                  padding: '3px 8px'
                                 }}
                               >
-                                <CheckCircle2
+                                <ShieldCheck
                                   style={{
                                     width: '13px',
                                     height: '13px',
@@ -24874,8 +25060,7 @@ export function App() {
                                     flexShrink: 0
                                   }}
                                 />
-                                <span style={{ fontWeight: 600 }}>Verify</span>
-                                <span style={{ opacity: 0.85 }}>({p.verifications})</span>
+                                <span style={{ fontWeight: 700 }}>{formatNumber(p.verifications)}</span>
                               </button>
                               <span style={{ color: '#94a3b8' }}>{p.comments.length} comments</span>
                             </div>
@@ -25585,7 +25770,7 @@ export function App() {
               justifyContent: 'center',
               padding: '16px'
             }}
-            onClick={() => setSelectedPeerProfile(null)}
+            onClick={() => closePeerProfile()}
           >
             <div
               style={{
@@ -25651,7 +25836,7 @@ export function App() {
                   type="button"
                   onClick={() => {
                     sound.playClick();
-                    setSelectedPeerProfile(null);
+                    closePeerProfile();
                   }}
                   style={{
                     position: 'absolute',
@@ -26278,7 +26463,7 @@ export function App() {
                           }
                           setActiveContactId(finalContactId);
                           setIsChatOpen(true);
-                          setSelectedPeerProfile(null);
+                          closePeerProfile();
                           setActiveTab('messages');
                         }}
                         style={{
@@ -26701,7 +26886,7 @@ export function App() {
                     type="button"
                     onClick={() => {
                       sound.playClick();
-                      setSelectedPeerProfile(null);
+                      closePeerProfile();
                     }}
                     style={{
                       width: '100%',
@@ -26936,14 +27121,14 @@ export function App() {
                 style={{
                   padding: '12px',
                   borderRadius: '12px',
-                  background: darkModeTheme ? 'rgba(16, 185, 129, 0.07)' : '#ecfdf5',
-                  border: '1px solid rgba(16, 185, 129, 0.35)',
+                  background: darkModeTheme ? 'rgba(37, 99, 235, 0.08)' : '#eff6ff',
+                  border: '1px solid rgba(56, 189, 248, 0.35)',
                   display: 'flex',
                   flexDirection: 'column',
                   gap: '8px'
                 }}
               >
-                <div style={{ fontSize: '11px', fontWeight: 900, fontFamily: 'monospace', color: '#34d399' }}>
+                <div style={{ fontSize: '11px', fontWeight: 900, fontFamily: 'monospace', color: darkModeTheme ? '#7dd3fc' : '#0369a1' }}>
                   2. SEND TO OPERATOR IN CHIXUS MESSAGES
                 </div>
                 {contacts.length > 0 && (
@@ -26956,9 +27141,9 @@ export function App() {
                         style={{
                           padding: '5px 9px',
                           borderRadius: '6px',
-                          background: darkModeTheme ? '#1e293b' : '#ffffff',
-                          border: '1px solid #10b981',
-                          color: '#34d399',
+                          background: darkModeTheme ? '#0d1119' : '#ffffff',
+                          border: '1px solid rgba(56, 189, 248, 0.45)',
+                          color: darkModeTheme ? '#7dd3fc' : '#0284c7',
                           fontSize: '10px',
                           fontFamily: 'monospace',
                           fontWeight: 'bold',
@@ -26980,7 +27165,7 @@ export function App() {
                       flex: 1,
                       padding: '9px 10px',
                       borderRadius: '8px',
-                      background: darkModeTheme ? '#090d16' : '#ffffff',
+                      background: darkModeTheme ? '#070a10' : '#ffffff',
                       border: darkModeTheme ? '1px solid #334155' : '1px solid #cbd5e1',
                       color: darkModeTheme ? '#ffffff' : '#0f172a',
                       fontSize: '11px',
@@ -26995,8 +27180,8 @@ export function App() {
                     style={{
                       padding: '9px 12px',
                       borderRadius: '8px',
-                      background: '#059669',
-                      border: '1px solid #34d399',
+                      background: 'linear-gradient(135deg, #2563eb 0%, #0284c7 100%)',
+                      border: '1px solid #38bdf8',
                       color: '#ffffff',
                       fontSize: '11px',
                       fontFamily: 'monospace',
@@ -27010,97 +27195,254 @@ export function App() {
                 </div>
               </div>
 
-              {/* 3. EDUCATE & READ / DEVICE SHARE / COPY LINK */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
-                {['Educate & Read', 'Device Share', 'Copy Link'].map((plat) => (
-                  <button
-                    key={plat}
-                    type="button"
-                    onClick={async () => {
-                      sound.playClick();
-                      if (plat === 'Educate & Read') {
-                        const target = shareTargetPost;
-                        setIsShareDrawerOpen(false);
-                        await handleEducateAndReadPost(target);
-                        return;
-                      }
-                      const shareUrl = window.location.origin;
-                      const shareText = `⚡ CHIXUS Post by ${shareTargetPost.author}:\n"${shareTargetPost.content}"\n${shareUrl}`;
-                      try {
-                        if (navigator.clipboard) {
-                          await navigator.clipboard.writeText(shareText);
-                        }
-                      } catch {}
-                      if (plat === 'Device Share' && typeof navigator !== 'undefined' && navigator.share) {
-                        try {
-                          await navigator.share({
-                            title: `CHIXUS Post by ${shareTargetPost.author}`,
-                            text: shareTargetPost.content,
-                            url: shareUrl
-                          });
-                        } catch {}
-                      }
-                      setIsShareDrawerOpen(false);
-                      triggerToast(
-                        plat === 'Copy Link'
-                          ? '📋 Post content & CHIXUS link copied to clipboard!'
-                          : `⚡ Shared via ${plat} (and copied to clipboard)!`
-                      );
-                    }}
-                    style={{
-                      padding: '10px 6px',
-                      borderRadius: '8px',
-                      background: plat === 'Educate & Read'
-                        ? (darkModeTheme ? 'rgba(56, 189, 248, 0.14)' : '#e0f2fe')
-                        : (darkModeTheme ? '#1e293b' : '#f1f5f9'),
-                      border: plat === 'Educate & Read'
-                        ? '1px solid #38bdf8'
-                        : (darkModeTheme ? '1px solid #334155' : '1px solid #cbd5e1'),
-                      color: plat === 'Educate & Read'
-                        ? (darkModeTheme ? '#38bdf8' : '#0284c7')
-                        : (darkModeTheme ? '#ffffff' : '#0f172a'),
-                      fontSize: '11px',
-                      fontFamily: 'monospace',
-                      fontWeight: 'bold',
-                      cursor: 'pointer'
-                    }}
-                  >
-                    {plat}
-                  </button>
-                ))}
-              </div>
-
-              {isPostOwnedByCurrentUser(shareTargetPost) && (
+              {/* 3. EDUCATE & READ / DEVICE SHARE / EDIT POST / DELETE POST */}
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: isPostOwnedByCurrentUser(shareTargetPost) ? 'repeat(2, 1fr)' : 'repeat(2, 1fr)',
+                  gap: '8px'
+                }}
+              >
                 <button
                   type="button"
-                  onClick={() => {
+                  onClick={async () => {
                     sound.playClick();
                     const target = shareTargetPost;
                     setIsShareDrawerOpen(false);
-                    triggerPostContextMenu(target);
+                    await handleEducateAndReadPost(target);
                   }}
                   style={{
-                    width: '100%',
-                    padding: '10px 14px',
+                    padding: '10px 8px',
                     borderRadius: '8px',
-                    background: 'rgba(239, 68, 68, 0.14)',
-                    border: '1px solid #ef4444',
-                    color: '#ef4444',
-                    fontSize: '11.5px',
+                    background: darkModeTheme ? 'rgba(56, 189, 248, 0.14)' : '#e0f2fe',
+                    border: '1px solid #38bdf8',
+                    color: darkModeTheme ? '#38bdf8' : '#0284c7',
+                    fontSize: '11px',
                     fontFamily: 'monospace',
-                    fontWeight: 900,
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '8px'
+                    fontWeight: 'bold',
+                    cursor: 'pointer'
                   }}
                 >
-                  <Trash2 style={{ width: '14px', height: '14px' }} />
-                  <span>Delete Post</span>
+                  Educate & Read
                 </button>
-              )}
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    sound.playClick();
+                    const shareUrl = window.location.origin;
+                    const shareText = `⚡ CHIXUS Post by ${shareTargetPost.author}:\n"${shareTargetPost.content}"\n${shareUrl}`;
+                    try {
+                      if (navigator.clipboard) {
+                        await navigator.clipboard.writeText(shareText);
+                      }
+                    } catch {}
+                    if (typeof navigator !== 'undefined' && navigator.share) {
+                      try {
+                        await navigator.share({
+                          title: `CHIXUS Post by ${shareTargetPost.author}`,
+                          text: shareTargetPost.content,
+                          url: shareUrl
+                        });
+                      } catch {}
+                    }
+                    setIsShareDrawerOpen(false);
+                    triggerToast('⚡ Shared via Device Share!');
+                  }}
+                  style={{
+                    padding: '10px 8px',
+                    borderRadius: '8px',
+                    background: darkModeTheme ? '#161b26' : '#f1f5f9',
+                    border: darkModeTheme ? '1px solid rgba(203, 213, 225, 0.22)' : '1px solid #cbd5e1',
+                    color: darkModeTheme ? '#ffffff' : '#0f172a',
+                    fontSize: '11px',
+                    fontFamily: 'monospace',
+                    fontWeight: 'bold',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Device Share
+                </button>
+
+                {isPostOwnedByCurrentUser(shareTargetPost) && (
+                  <>
+                    <button
+                      type="button"
+                      id="share-sheet-edit-post-btn"
+                      onClick={() => {
+                        sound.playClick();
+                        const target = shareTargetPost;
+                        setIsShareDrawerOpen(false);
+                        setEditingPostTarget(target);
+                        setEditingPostContent(target.content || '');
+                      }}
+                      style={{
+                        padding: '10px 8px',
+                        borderRadius: '8px',
+                        background: darkModeTheme ? 'rgba(203, 213, 225, 0.1)' : '#f8fafc',
+                        border: darkModeTheme ? '1px solid rgba(203, 213, 225, 0.35)' : '1px solid #94a3b8',
+                        color: darkModeTheme ? '#f8fafc' : '#0f172a',
+                        fontSize: '11px',
+                        fontFamily: 'monospace',
+                        fontWeight: 900,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '6px'
+                      }}
+                    >
+                      <Edit3 style={{ width: '13px', height: '13px', color: '#38bdf8' }} />
+                      <span>Edit Post</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      id="share-sheet-delete-post-btn"
+                      onClick={() => {
+                        sound.playClick();
+                        const target = shareTargetPost;
+                        setIsShareDrawerOpen(false);
+                        setContextMenuPost(target);
+                        setConfirmDeletePost(true);
+                      }}
+                      style={{
+                        padding: '10px 8px',
+                        borderRadius: '8px',
+                        background: 'rgba(239, 68, 68, 0.14)',
+                        border: '1px solid #ef4444',
+                        color: '#ef4444',
+                        fontSize: '11px',
+                        fontFamily: 'monospace',
+                        fontWeight: 900,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '6px'
+                      }}
+                    >
+                      <Trash2 style={{ width: '13px', height: '13px' }} />
+                      <span>Delete Post</span>
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
+          </div>
+        )}
+
+        {/* Edit Own Post Modal */}
+        {editingPostTarget && (
+          <div
+            id="edit-post-modal-backdrop"
+            style={{
+              position: 'fixed',
+              inset: 0,
+              zIndex: 10045,
+              backgroundColor: 'rgba(4, 7, 14, 0.85)',
+              backdropFilter: 'blur(6px)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '16px'
+            }}
+            onClick={() => {
+              setEditingPostTarget(null);
+              setEditingPostContent('');
+            }}
+          >
+            <form
+              onSubmit={handleSaveEditedPost}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                width: '100%',
+                maxWidth: '400px',
+                background: darkModeTheme ? '#0d1119' : '#ffffff',
+                border: '1px solid rgba(56, 189, 248, 0.45)',
+                borderRadius: '16px',
+                padding: '18px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '12px',
+                boxShadow: '0 20px 50px rgba(0, 0, 0, 0.85)'
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ fontSize: '13px', fontWeight: 900, fontFamily: 'monospace', color: darkModeTheme ? '#f8fafc' : '#0f172a', display: 'flex', alignItems: 'center', gap: '7px' }}>
+                  <Edit3 style={{ width: '14px', height: '14px', color: '#38bdf8' }} />
+                  <span>EDIT POST</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingPostTarget(null);
+                    setEditingPostContent('');
+                  }}
+                  style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer' }}
+                >
+                  <X style={{ width: '16px', height: '16px' }} />
+                </button>
+              </div>
+              <textarea
+                rows={4}
+                value={editingPostContent}
+                onChange={(e) => setEditingPostContent(e.target.value)}
+                placeholder="Update your post content..."
+                style={{
+                  width: '100%',
+                  padding: '12px',
+                  borderRadius: '10px',
+                  background: darkModeTheme ? '#07090e' : '#f8fafc',
+                  border: darkModeTheme ? '1px solid rgba(148, 163, 184, 0.25)' : '1px solid #cbd5e1',
+                  color: darkModeTheme ? '#f1f5f9' : '#0f172a',
+                  fontSize: '12.5px',
+                  fontFamily: 'monospace',
+                  lineHeight: 1.5,
+                  outline: 'none',
+                  resize: 'vertical',
+                  boxSizing: 'border-box'
+                }}
+              />
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingPostTarget(null);
+                    setEditingPostContent('');
+                  }}
+                  style={{
+                    flex: 1,
+                    padding: '10px',
+                    borderRadius: '8px',
+                    background: darkModeTheme ? '#161b26' : '#f1f5f9',
+                    border: darkModeTheme ? '1px solid #334155' : '1px solid #cbd5e1',
+                    color: darkModeTheme ? '#cbd5e1' : '#334155',
+                    fontSize: '12px',
+                    fontFamily: 'monospace',
+                    fontWeight: 'bold',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="tactical-brushed-silver-btn"
+                  style={{
+                    flex: 1,
+                    padding: '10px',
+                    borderRadius: '8px',
+                    fontSize: '12px',
+                    fontFamily: 'monospace',
+                    fontWeight: 900,
+                    cursor: 'pointer'
+                  }}
+                >
+                  Save Changes
+                </button>
+              </div>
+            </form>
           </div>
         )}
 
