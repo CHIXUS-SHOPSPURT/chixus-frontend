@@ -33,9 +33,79 @@ export const DEFAULT_USER_PREFERENCES: UserPreferencesPayload = {
   soundFeedback: true,
   isIdPublic: true,
   aiAccessLevel: 'everything',
-  theme: 'white',
+  theme: 'dark',
   language: 'English'
 };
+
+const LOCAL_PREFS_GLOBAL_KEY = 'chixus_local_prefs_override_v1';
+
+export function readPersistedLocalPreferences(
+  nodeId?: string
+): { prefs: UserPreferencesPayload; updatedAtMs: number } | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const cleanId = (nodeId || '').trim().toUpperCase();
+    const candidates: Array<{ prefs: UserPreferencesPayload; updatedAtMs: number }> = [];
+
+    const parseEntry = (raw: string | null) => {
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.prefs) {
+        candidates.push({
+          prefs: normalizePreferences(parsed.prefs),
+          updatedAtMs: Number(parsed.updatedAtMs || 0)
+        });
+      } else if (parsed && (parsed.theme || parsed.language || parsed.inAppAlerts)) {
+        candidates.push({
+          prefs: normalizePreferences(parsed),
+          updatedAtMs: Number(parsed.updatedAtMs || (parsed.updatedAt ? Date.parse(parsed.updatedAt) : 0) || 1)
+        });
+      }
+    };
+
+    if (cleanId) {
+      parseEntry(localStorage.getItem(`chixus_prefs_cache_v1_${cleanId}`));
+    }
+    parseEntry(localStorage.getItem(LOCAL_PREFS_GLOBAL_KEY));
+
+    if (candidates.length === 0) return null;
+    candidates.sort((a, b) => b.updatedAtMs - a.updatedAtMs);
+    return candidates[0];
+  } catch {
+    return null;
+  }
+}
+
+export function writePersistedLocalPreferences(
+  prefs: UserPreferencesPayload,
+  nodeId?: string,
+  updatedAtMs = Date.now()
+): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const normalized = normalizePreferences(prefs);
+    const payload = JSON.stringify({ prefs: normalized, updatedAtMs });
+    localStorage.setItem(LOCAL_PREFS_GLOBAL_KEY, payload);
+    const cleanId = (nodeId || '').trim().toUpperCase();
+    if (cleanId) {
+      localStorage.setItem(`chixus_prefs_cache_v1_${cleanId}`, payload);
+    }
+  } catch {}
+}
+
+export function mergeRemoteWithLocalPreferences(
+  remote: UserPreferencesPayload,
+  nodeId?: string
+): UserPreferencesPayload {
+  const local = readPersistedLocalPreferences(nodeId);
+  const remoteNorm = normalizePreferences(remote);
+  if (!local) return remoteNorm;
+  const remoteTs = remoteNorm.updatedAt ? Date.parse(remoteNorm.updatedAt) : 0;
+  if (local.updatedAtMs >= (Number.isFinite(remoteTs) ? remoteTs : 0)) {
+    return local.prefs;
+  }
+  return remoteNorm;
+}
 
 export class ApiRequestError extends Error {
   status: number;
@@ -130,9 +200,9 @@ export function normalizePreferences(raw: Record<string, any> | null | undefined
   const validAi: AiAccessLevel[] = ['feed', 'inspect', 'profile', 'none', 'everything', 'no_message_allow_other'];
   const aiAccessLevel: AiAccessLevel = validAi.includes(rawAi) ? rawAi : 'everything';
 
-  const rawTheme = p.theme || p.themeSelection || 'white';
+  const rawTheme = p.theme || p.themeSelection || 'dark';
   const theme: 'dark' | 'white' | 'system' =
-    rawTheme === 'dark' || rawTheme === 'white' || rawTheme === 'system' ? rawTheme : 'white';
+    rawTheme === 'dark' || rawTheme === 'white' || rawTheme === 'system' ? rawTheme : 'dark';
 
   return {
     emailAlerts: {
@@ -365,17 +435,21 @@ export async function loginWithIdentifier(
 
       const rawUser = data.user || data.operator || hardcoded.profile;
       const user = normalizeAccountProfile(rawUser);
-      const preferences = data.preferences ? normalizePreferences(data.preferences) : { ...DEFAULT_USER_PREFERENCES };
+      const localStored = readPersistedLocalPreferences(user.chixus_id)?.prefs;
+      const preferences = data.preferences
+        ? mergeRemoteWithLocalPreferences(normalizePreferences(data.preferences), user.chixus_id)
+        : (localStored || { ...DEFAULT_USER_PREFERENCES });
       return { token: activeToken, user, preferences };
     } catch (err: unknown) {
       if (err instanceof ApiRequestError && err.status === 401) {
         throw err;
       }
       setAuthToken(fallbackToken);
+      const localStored = readPersistedLocalPreferences(hardcoded.chixusId)?.prefs;
       return {
         token: fallbackToken,
         user: { ...hardcoded.profile },
-        preferences: { ...DEFAULT_USER_PREFERENCES }
+        preferences: localStored || { ...DEFAULT_USER_PREFERENCES }
       };
     }
   }
@@ -404,7 +478,10 @@ export async function loginWithIdentifier(
     internal_id: data.internal_id
   };
   const user = normalizeAccountProfile(rawUser);
-  const preferences = data.preferences ? normalizePreferences(data.preferences) : undefined;
+  const localStored = readPersistedLocalPreferences(user.chixus_id)?.prefs;
+  const preferences = data.preferences
+    ? mergeRemoteWithLocalPreferences(normalizePreferences(data.preferences), user.chixus_id)
+    : localStored;
 
   return { token, user, preferences };
 }
@@ -480,7 +557,8 @@ export async function fetchAuthenticatedAccount(): Promise<PermanentUserIdentity
 export async function fetchUserPreferences(): Promise<UserPreferencesPayload> {
   const currentToken = getAuthToken();
   if (currentToken.startsWith(HARDCODED_TEST_TOKEN_PREFIX)) {
-    return { ...DEFAULT_USER_PREFERENCES };
+    const id = currentToken.slice(HARDCODED_TEST_TOKEN_PREFIX.length);
+    return readPersistedLocalPreferences(id)?.prefs || { ...DEFAULT_USER_PREFERENCES };
   }
   const data = await apiFetchJson<{ status?: string; preferences?: Record<string, any> }>(
     API_ENDPOINTS.SETTINGS_PREFERENCES(),

@@ -1,16 +1,21 @@
 import React, { useState } from 'react';
-import { ChevronRight } from 'lucide-react';
+import { ChevronRight, Compass } from 'lucide-react';
 import heroPcbImage from '../assets/images/chixus_hero_pcb_clean_1794819731664.jpg';
+import { tr } from '../i18n/translations';
 
 interface OnboardingWelcomeScreenProps {
   onGetStarted: () => void;
   onSignIn: () => void;
+  onExploreGuest?: () => void;
+  language?: string;
   logoSrc: string;
 }
 
 export const OnboardingWelcomeScreen: React.FC<OnboardingWelcomeScreenProps> = ({
   onGetStarted,
   onSignIn,
+  onExploreGuest,
+  language = 'English',
   logoSrc,
 }) => {
   const [imageFailed, setImageFailed] = useState(false);
@@ -263,7 +268,7 @@ export const OnboardingWelcomeScreen: React.FC<OnboardingWelcomeScreenProps> = (
           {/* Welcome Headline, Value Proposition & Actions */}
           <div className="order-2 flex flex-col items-start text-left lg:order-1 lg:col-span-5">
             <p className="mb-3 text-[11px] font-semibold tracking-[0.22em] text-slate-400 uppercase">
-              Technical Inspection System
+              {tr('Technical Inspection System', language)}
             </p>
 
             <h1
@@ -273,13 +278,16 @@ export const OnboardingWelcomeScreen: React.FC<OnboardingWelcomeScreenProps> = (
                 lineHeight: 1.08,
               }}
             >
-              Understand.
+              {tr('Understand.', language)}
               <br />
-              Diagnose. Resolve.
+              {tr('Diagnose. Resolve.', language)}
             </h1>
 
             <p className="mt-4 max-w-[44ch] text-[15px] leading-[1.6] text-slate-400 sm:mt-5 sm:text-base">
-              AI-powered technical inspection that helps you understand equipment issues and navigate diagnostic processes.
+              {tr(
+                'Capture live equipment imagery, isolate root faults with precision AI, and seal verified industrial records onto your node.',
+                language
+              )}
             </p>
 
             {/* Primary & Secondary Actions */}
@@ -290,7 +298,7 @@ export const OnboardingWelcomeScreen: React.FC<OnboardingWelcomeScreenProps> = (
                 onClick={onGetStarted}
                 className="silver-metallic-button flex min-h-[48px] w-full cursor-pointer items-center justify-center gap-2 rounded-xl px-7 text-sm font-bold tracking-wide text-[#080a0f] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-200 sm:w-auto"
               >
-                <span>Get Started</span>
+                <span>{tr('Get Started', language)}</span>
                 <ChevronRight className="h-4 w-4 text-[#080a0f]" />
               </button>
 
@@ -300,9 +308,27 @@ export const OnboardingWelcomeScreen: React.FC<OnboardingWelcomeScreenProps> = (
                 onClick={onSignIn}
                 className="flex min-h-[48px] w-full cursor-pointer items-center justify-center rounded-xl border border-slate-300/20 bg-[#12161f] px-7 text-sm font-semibold tracking-wide text-slate-200 transition-colors hover:border-slate-300/40 hover:bg-[#171c27] hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-300 sm:w-auto"
               >
-                <span>Sign In</span>
+                <span>{tr('Sign In', language)}</span>
               </button>
             </div>
+
+            {onExploreGuest && (
+              <div className="mt-4 flex flex-col items-start gap-1">
+                <button
+                  type="button"
+                  id="onboarding-explore-chixus-btn"
+                  onClick={onExploreGuest}
+                  className="group inline-flex cursor-pointer items-center gap-2 rounded-xl border border-slate-300/20 bg-gradient-to-b from-slate-200/12 via-slate-300/5 to-transparent px-4 py-2 text-xs font-semibold tracking-wide text-slate-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_4px_14px_rgba(0,0,0,0.45)] backdrop-blur-md transition-all hover:border-slate-200/35 hover:from-slate-200/18 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-300"
+                >
+                  <Compass className="h-3.5 w-3.5 text-sky-300 transition-transform group-hover:rotate-12" />
+                  <span>{tr('Explore CHIXUS', language)}</span>
+                  <ChevronRight className="h-3.5 w-3.5 text-slate-400 transition-transform group-hover:translate-x-0.5 group-hover:text-slate-200" />
+                </button>
+                <span className="pl-1 text-[11px] text-slate-400/90">
+                  {tr('Continue without creating an account.', language)}
+                </span>
+              </div>
+            )}
           </div>
         </div>
       </main>

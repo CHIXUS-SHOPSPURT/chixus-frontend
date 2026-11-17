@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
 
 @layer base {
   :root {
@@ -504,6 +505,161 @@
     opacity: 0.85 !important;
     transform: scale(1) !important;
   }
+
+  .chixus-splash-aura,
+  .chixus-goo-orbit,
+  .chixus-splash-sheen,
+  .chixus-splash-logo-stage,
+  .chixus-splash-logo-ready {
+    animation: none !important;
+    transform: none !important;
+  }
 }
+
+/* =========================================================
+   CHIXUS Liquid-Goo Loading Splash Animations
+   ========================================================= */
+@keyframes chixusSplashAuraBreath {
+  0%, 100% {
+    transform: scale(0.94);
+    opacity: 0.55;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 0.9;
+  }
+}
+
+@keyframes chixusGooOrbitA {
+  0% {
+    transform: rotate(0deg) translateX(64px) scale(0.95);
+  }
+  50% {
+    transform: rotate(180deg) translateX(74px) scale(1.12);
+  }
+  100% {
+    transform: rotate(360deg) translateX(64px) scale(0.95);
+  }
+}
+
+@keyframes chixusGooOrbitB {
+  0% {
+    transform: rotate(90deg) translateX(68px) scale(1.05);
+  }
+  50% {
+    transform: rotate(270deg) translateX(58px) scale(0.88);
+  }
+  100% {
+    transform: rotate(450deg) translateX(68px) scale(1.05);
+  }
+}
+
+@keyframes chixusGooOrbitC {
+  0% {
+    transform: rotate(180deg) translateX(62px) scale(0.9);
+  }
+  50% {
+    transform: rotate(360deg) translateX(72px) scale(1.08);
+  }
+  100% {
+    transform: rotate(540deg) translateX(62px) scale(0.9);
+  }
+}
+
+@keyframes chixusGooOrbitD {
+  0% {
+    transform: rotate(270deg) translateX(70px) scale(1);
+  }
+  50% {
+    transform: rotate(450deg) translateX(60px) scale(0.92);
+  }
+  100% {
+    transform: rotate(630deg) translateX(70px) scale(1);
+  }
+}
+
+@keyframes chixusSplashReveal {
+  0% {
+    opacity: 0;
+    transform: perspective(600px) rotateX(8deg) rotateY(-8deg) scale(0.82);
+  }
+  65% {
+    opacity: 1;
+    transform: perspective(600px) rotateX(-2deg) rotateY(3deg) scale(1.03);
+  }
+  100% {
+    opacity: 1;
+    transform: perspective(600px) rotateX(2deg) rotateY(-2deg) scale(1);
+  }
+}
+
+@keyframes chixusSplashSettlePop {
+  0% {
+    transform: scale(1);
+  }
+  45% {
+    transform: scale(1.09);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes chixusSplashSheenSweep {
+  0% {
+    transform: translateX(-140%) rotate(22deg);
+    opacity: 0;
+  }
+  20% {
+    opacity: 0.45;
+  }
+  55% {
+    transform: translateX(150%) rotate(22deg);
+    opacity: 0;
+  }
+  100% {
+    transform: translateX(150%) rotate(22deg);
+    opacity: 0;
+  }
+}
+
+.chixus-splash-aura {
+  animation: chixusSplashAuraBreath 2.8s ease-in-out infinite;
+}
+
+.chixus-goo-orbit-1 {
+  animation: chixusGooOrbitA 2.69s linear infinite;
+}
+
+.chixus-goo-orbit-2 {
+  animation: chixusGooOrbitB 2.69s linear infinite;
+}
+
+.chixus-goo-orbit-3 {
+  animation: chixusGooOrbitC 2.69s linear infinite;
+}
+
+.chixus-goo-orbit-4 {
+  animation: chixusGooOrbitD 2.69s linear infinite;
+}
+
+.chixus-splash-logo-stage {
+  animation: chixusSplashReveal 0.65s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.chixus-splash-logo-ready {
+  animation: chixusSplashSettlePop 0.36s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+.chixus-splash-sheen {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.24) 50%,
+    transparent 100%
+  );
+  animation: chixusSplashSheenSweep 2.4s ease-in-out infinite;
+}
+
 
 

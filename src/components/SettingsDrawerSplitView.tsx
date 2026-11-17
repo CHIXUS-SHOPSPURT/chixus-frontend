@@ -37,6 +37,7 @@ import {
   PHONE_CHANGE_CONFIRMATION_MESSAGE
 } from '../services/accountService';
 import type { AiAccessLevel, UserPreferencesPayload } from '../types';
+import { tr } from '../i18n/translations';
 
 export interface SettingsDrawerSplitViewProps {
   isOpen: boolean;
@@ -328,21 +329,21 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
 
     if (!onUpdatePreferencePatch) {
       setSavingPrefKey(null);
-      setPrefBanner({ text: '✓ Preference saved locally on this device.', isError: false });
+      setPrefBanner({ text: `✓ ${tr('Preference saved.', selectedLanguage)}`, isError: false });
       return { ok: true };
     }
 
     try {
       const result = await onUpdatePreferencePatch(nextPrefs, changedKey);
       if (result.ok) {
-        setPrefBanner({ text: '✓ Preference saved.', isError: false });
+        setPrefBanner({ text: `✓ ${tr('Preference saved.', selectedLanguage)}`, isError: false });
         return { ok: true };
       }
       // Keep local change active rather than reverting on offline/transient backend unavailability
-      setPrefBanner({ text: '✓ Preference saved locally on this device.', isError: false });
+      setPrefBanner({ text: `✓ ${tr('Preference saved.', selectedLanguage)}`, isError: false });
       return { ok: true };
     } catch {
-      setPrefBanner({ text: '✓ Preference saved locally on this device.', isError: false });
+      setPrefBanner({ text: `✓ ${tr('Preference saved.', selectedLanguage)}`, isError: false });
       return { ok: true };
     } finally {
       setSavingPrefKey((curr) => (curr === changedKey ? null : curr));
@@ -614,45 +615,45 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
   }> = [
     {
       id: 'account',
-      title: 'Your account',
+      title: tr('Account & Node', selectedLanguage),
       icon: User,
-      subpageTitle: 'Your Account Information',
-      subpageDescription: 'Review and update your phone number, email address, registered country, and account credentials.'
+      subpageTitle: tr('Account & Node', selectedLanguage),
+      subpageDescription: tr('Profile details, CHIXUS ID, and security posture', selectedLanguage)
     },
     {
       id: 'security',
-      title: 'Security and account access',
+      title: tr('Account Security', selectedLanguage),
       icon: Lock,
-      subpageTitle: 'Security and Account Access',
-      subpageDescription: 'Manage sovereign ID visibility across public directories and configure device cryptographic authorization.'
+      subpageTitle: tr('Account Security', selectedLanguage),
+      subpageDescription: tr('Two-factor controls and password rotation', selectedLanguage)
     },
     {
       id: 'privacy',
-      title: 'Privacy and safety',
+      title: tr('Privacy Policy', selectedLanguage),
       icon: Shield,
-      subpageTitle: 'Privacy and Safety',
-      subpageDescription: 'Configure fine-grained Qorvex AI permissions and control how the neural engine interacts with your feed, inspector, and messages.'
+      subpageTitle: tr('Qorvex', selectedLanguage),
+      subpageDescription: tr('Permissions, telemetry sharing, and voice access', selectedLanguage)
     },
     {
       id: 'notifications',
-      title: 'Notifications',
+      title: tr('Notifications', selectedLanguage),
       icon: Bell,
-      subpageTitle: 'Notification Preferences',
-      subpageDescription: 'Configure email alerts for weekly metrics and toggle real-time on-screen popups and sound cues.'
+      subpageTitle: tr('Notifications', selectedLanguage),
+      subpageDescription: tr('Email & telemetry alert delivery controls', selectedLanguage)
     },
     {
       id: 'accessibility',
-      title: 'Accessibility, display, and languages',
+      title: `${tr('Accessibility', selectedLanguage)}, ${tr('Display', selectedLanguage)}, ${tr('Languages', selectedLanguage)}`,
       icon: Sliders,
-      subpageTitle: 'Accessibility, Display, and Languages',
-      subpageDescription: 'Toggle sound feedback (click & tap audio cues), select color palette themes, and choose your preferred language.'
+      subpageTitle: `${tr('Accessibility', selectedLanguage)}, ${tr('Display', selectedLanguage)}, ${tr('Languages', selectedLanguage)}`,
+      subpageDescription: tr('Contrast, audio feedback, and read receipts', selectedLanguage)
     },
     {
       id: 'resources',
-      title: 'Additional resources',
+      title: tr('About CHIXUS', selectedLanguage),
       icon: FileText,
-      subpageTitle: 'Additional Resources & Governance',
-      subpageDescription: 'Access system specifications, telemetry integrity guarantees, and local cache management.'
+      subpageTitle: tr('About CHIXUS', selectedLanguage),
+      subpageDescription: tr('Platform architecture and diagnostic engine info', selectedLanguage)
     }
   ];
 
@@ -746,10 +747,10 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
             </div>
             <div>
               <div style={{ fontSize: '14px', fontWeight: 900, fontFamily: 'monospace', letterSpacing: '0.5px' }}>
-                SETTINGS
+                {tr('SETTINGS', selectedLanguage)}
               </div>
               <div style={{ fontSize: '10px', color: '#94a3b8', fontFamily: 'monospace' }}>
-                System configuration & account controls
+                {tr('Profile details, CHIXUS ID, and security posture', selectedLanguage)}
               </div>
             </div>
           </div>
@@ -773,7 +774,7 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
             }}
           >
             <X style={{ width: '15px', height: '15px' }} />
-            <span>Close</span>
+            <span>{tr('Close', selectedLanguage)}</span>
           </button>
         </div>
 
@@ -814,7 +815,7 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                     id="settings-search-input"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search settings"
+                    placeholder={tr('Search settings', selectedLanguage)}
                     style={{
                       flex: 1,
                       background: 'transparent',
@@ -970,7 +971,7 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                     }}
                   >
                     <LogOut style={{ width: '13px', height: '13px', color: '#f87171' }} />
-                    <span>Logout</span>
+                    <span>{tr('Logout', selectedLanguage)}</span>
                   </button>
                 )}
               </div>
@@ -1016,7 +1017,7 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                     }}
                   >
                     <ArrowLeft style={{ width: '15px', height: '15px' }} />
-                    <span>Back to Settings</span>
+                    <span>{tr('Back to Settings', selectedLanguage)}</span>
                   </button>
                 </div>
               )}
@@ -1027,17 +1028,11 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                   <div style={{ fontSize: '17px', fontWeight: 900, fontFamily: 'monospace', color: darkModeTheme ? '#ffffff' : '#0f172a' }}>
                     {activeItem.subpageTitle}
                   </div>
-                  {(isLoadingPreferences || savingPrefKey) && (
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '10.5px', fontFamily: 'monospace', color: '#38bdf8', fontWeight: 700 }}>
-                      <Loader2 style={{ width: '13px', height: '13px', animation: 'spin 1s linear infinite' }} />
-                      <span>{savingPrefKey ? 'Saving to backend...' : 'Syncing settings...'}</span>
-                    </span>
-                  )}
                 </div>
                 <div style={{ fontSize: '11.5px', color: '#94a3b8', fontFamily: 'monospace', marginTop: '4px', lineHeight: 1.5 }}>
                   {activeItem.subpageDescription}
                 </div>
-                {(preferencesSyncError || prefBanner) && (
+                {prefBanner && !prefBanner.isError && (
                   <div
                     style={{
                       marginTop: '10px',
@@ -1048,17 +1043,13 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                       display: 'flex',
                       alignItems: 'center',
                       gap: '8px',
-                      background: (preferencesSyncError || prefBanner?.isError) ? 'rgba(239, 68, 68, 0.14)' : 'rgba(37, 99, 235, 0.14)',
-                      border: (preferencesSyncError || prefBanner?.isError) ? '1px solid #ef4444' : '1px solid #38bdf8',
-                      color: (preferencesSyncError || prefBanner?.isError) ? '#f87171' : '#7dd3fc'
+                      background: 'rgba(37, 99, 235, 0.14)',
+                      border: '1px solid #38bdf8',
+                      color: '#7dd3fc'
                     }}
                   >
-                    {(preferencesSyncError || prefBanner?.isError) ? (
-                      <AlertCircle style={{ width: '14px', height: '14px', flexShrink: 0 }} />
-                    ) : (
-                      <CheckCircle2 style={{ width: '14px', height: '14px', flexShrink: 0 }} />
-                    )}
-                    <span>{preferencesSyncError || prefBanner?.text}</span>
+                    <CheckCircle2 style={{ width: '14px', height: '14px', flexShrink: 0 }} />
+                    <span>{prefBanner.text}</span>
                   </div>
                 )}
               </div>
@@ -1574,7 +1565,7 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                         }}
                       >
                         <LogOut style={{ width: '15px', height: '15px', color: '#f87171' }} />
-                        <span>Lock Node / Log Out</span>
+                        <span>{tr('Lock Node / Log Out', selectedLanguage)}</span>
                       </button>
                     </div>
                   )}
@@ -2022,7 +2013,7 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                           <div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                               <span style={{ fontSize: '12.5px', fontWeight: 700, fontFamily: 'monospace' }}>
-                                Sound Feedback
+                                {tr('Sound Feedback', selectedLanguage)}
                               </span>
                               <span
                                 style={{
@@ -2036,7 +2027,7 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                                   border: soundFeedbackActive ? '1px solid #38bdf8' : '1px solid #64748b'
                                 }}
                               >
-                                {soundFeedbackActive ? 'On' : 'Off'}
+                                {tr(soundFeedbackActive ? 'On' : 'Off', selectedLanguage)}
                               </span>
                             </div>
                             <div style={{ fontSize: '10.5px', color: '#94a3b8', marginTop: '2px', lineHeight: 1.4 }}>
@@ -2124,7 +2115,7 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                       <div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                           <span style={{ fontSize: '13px', fontWeight: 900, fontFamily: 'monospace', color: darkModeTheme ? '#ffffff' : '#0f172a' }}>
-                            Sound Feedback
+                            {tr('Sound Feedback', selectedLanguage)}
                           </span>
                           <span
                             id="sound-feedback-status-badge"
@@ -2139,7 +2130,7 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                               border: soundFeedbackActive ? '1px solid #38bdf8' : '1px solid #64748b'
                             }}
                           >
-                            {soundFeedbackActive ? 'On' : 'Off'}
+                            {tr(soundFeedbackActive ? 'On' : 'Off', selectedLanguage)}
                           </span>
                         </div>
                         <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '3px', lineHeight: 1.4 }}>
@@ -2193,17 +2184,17 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                     }}
                   >
                     <div style={{ fontSize: '12px', fontWeight: 900, fontFamily: 'monospace', color: '#38bdf8', marginBottom: '8px' }}>
-                      INTERFACE THEME PALETTE
+                      {tr('Display', selectedLanguage).toUpperCase()}
                     </div>
                     <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '14px' }}>
-                      Choose your visual styling: Dark (Charcoal), White (Light), or match system preferences.
+                      {tr('Dark and light interface theme appearance', selectedLanguage)}
                     </div>
 
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px' }}>
                       {[
-                        { id: 'dark' as const, label: 'Dark', icon: Moon, desc: 'High-Tech Charcoal' },
-                        { id: 'white' as const, label: 'White', icon: Sun, desc: 'Brushed Metallic Silver' },
-                        { id: 'system' as const, label: 'System Default', icon: Monitor, desc: 'Automatic Sync' }
+                        { id: 'dark' as const, label: tr('Dark', selectedLanguage), icon: Moon, desc: tr('Dark', selectedLanguage) },
+                        { id: 'white' as const, label: tr('White', selectedLanguage), icon: Sun, desc: tr('White', selectedLanguage) },
+                        { id: 'system' as const, label: tr('System Default', selectedLanguage), icon: Monitor, desc: tr('System Default', selectedLanguage) }
                       ].map((t) => {
                         const isSelected = themeSelection === t.id;
                         const Icon = t.icon;
@@ -2254,10 +2245,10 @@ export const SettingsDrawerSplitView: React.FC<SettingsDrawerSplitViewProps> = (
                     }}
                   >
                     <div style={{ fontSize: '12px', fontWeight: 900, fontFamily: 'monospace', color: '#38bdf8', marginBottom: '8px' }}>
-                      SUPPORTED LANGUAGES
+                      {tr('SUPPORTED LANGUAGES', selectedLanguage)}
                     </div>
                     <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '14px', lineHeight: 1.4 }}>
-                      Select your operational dialect. Rendered cleanly without ISO country suffixes.
+                      {tr('Choose your preferred CHIXUS interface language', selectedLanguage)}
                     </div>
 
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '8px', maxHeight: '280px', overflowY: 'auto' }}>

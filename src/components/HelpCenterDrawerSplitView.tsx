@@ -27,6 +27,7 @@ import {
   CHIXUS_SAFETY_POLICY,
   CHIXUS_TERMS_AND_CONDITIONS
 } from '../data/chixusPolicies';
+import { tr } from '../i18n/translations';
 
 export interface HelpCenterDrawerSplitViewProps {
   isOpen: boolean;
@@ -276,24 +277,24 @@ export const HelpCenterDrawerSplitView: React.FC<HelpCenterDrawerSplitViewProps>
     },
     {
       id: 'privacy_policy',
-      title: 'Privacy Policy',
+      title: tr('Privacy Policy', selectedLanguage),
       icon: FileText,
-      subpageTitle: 'CHIXUS Sovereign Privacy Policy',
-      subpageDescription: 'Information collected, profile privacy, optical media storage, AI processing limits, and 4-day retention lock.'
+      subpageTitle: tr('Privacy Policy', selectedLanguage),
+      subpageDescription: tr('How CHIXUS processes telemetry and user records', selectedLanguage)
     },
     {
       id: 'safety_policy',
-      title: 'Safety Policy',
+      title: tr('Diagnostics FAQ', selectedLanguage),
       icon: AlertCircle,
-      subpageTitle: 'Hardware Safety & High-Voltage Policy',
-      subpageDescription: 'Mandatory zero-energy verification protocols, Live-Dead-Live (LDL) checks, and AI advisory recommendations.'
+      subpageTitle: tr('Diagnostics FAQ', selectedLanguage),
+      subpageDescription: tr('Troubleshooting inspections, camera, and sync', selectedLanguage)
     },
     {
       id: 'terms_conditions',
-      title: 'Terms and Conditions',
+      title: tr('Terms of Service', selectedLanguage),
       icon: Shield,
-      subpageTitle: 'CHIXUS Network Terms & Conditions',
-      subpageDescription: 'Operator node responsibilities, acceptable platform use, intellectual property, and liability limitations.'
+      subpageTitle: tr('Terms of Service', selectedLanguage),
+      subpageDescription: tr('Service standards and industrial usage rules', selectedLanguage)
     }
   ];
 
@@ -377,10 +378,10 @@ export const HelpCenterDrawerSplitView: React.FC<HelpCenterDrawerSplitViewProps>
             </div>
             <div>
               <div style={{ fontSize: '14px', fontWeight: 900, fontFamily: 'monospace', letterSpacing: '0.5px' }}>
-                HELP CENTER
+                {tr('HELP CENTER', selectedLanguage)}
               </div>
               <div style={{ fontSize: '10px', color: '#94a3b8', fontFamily: 'monospace' }}>
-                System documentation & knowledge base
+                {tr('About CHIXUS', selectedLanguage)}
               </div>
             </div>
           </div>
@@ -404,7 +405,7 @@ export const HelpCenterDrawerSplitView: React.FC<HelpCenterDrawerSplitViewProps>
             }}
           >
             <X style={{ width: '15px', height: '15px' }} />
-            <span>Close</span>
+            <span>{tr('Close', selectedLanguage)}</span>
           </button>
         </div>
 
@@ -598,7 +599,7 @@ export const HelpCenterDrawerSplitView: React.FC<HelpCenterDrawerSplitViewProps>
                       cursor: 'pointer'
                     }}
                   >
-                    Contact Us
+                    {tr('Contact Us', selectedLanguage)}
                   </button>
                   <button
                     type="button"
@@ -619,7 +620,7 @@ export const HelpCenterDrawerSplitView: React.FC<HelpCenterDrawerSplitViewProps>
                       cursor: 'pointer'
                     }}
                   >
-                    Submit Ticket
+                    {tr('Submit Ticket', selectedLanguage)}
                   </button>
                   <button
                     type="button"
@@ -640,7 +641,7 @@ export const HelpCenterDrawerSplitView: React.FC<HelpCenterDrawerSplitViewProps>
                       cursor: 'pointer'
                     }}
                   >
-                    Feedback
+                    {tr('Feedback', selectedLanguage)}
                   </button>
                 </div>
               </div>
@@ -686,7 +687,7 @@ export const HelpCenterDrawerSplitView: React.FC<HelpCenterDrawerSplitViewProps>
                     }}
                   >
                     <ArrowLeft style={{ width: '15px', height: '15px' }} />
-                    <span>Back to Help Center</span>
+                    <span>{tr('Back to Help Center', selectedLanguage)}</span>
                   </button>
                 </div>
               )}
@@ -762,7 +763,7 @@ export const HelpCenterDrawerSplitView: React.FC<HelpCenterDrawerSplitViewProps>
                     ) : (
                       <>
                         <Send style={{ width: '14px', height: '14px' }} />
-                        <span>Ask AI</span>
+                        <span>{tr('Ask AI', selectedLanguage)}</span>
                       </>
                     )}
                   </button>
@@ -1439,7 +1440,7 @@ export const HelpCenterDrawerSplitView: React.FC<HelpCenterDrawerSplitViewProps>
                       cursor: 'pointer'
                     }}
                   >
-                    Cancel
+                    {tr('Cancel', selectedLanguage)}
                   </button>
                   <button
                     type="submit"
@@ -1456,7 +1457,7 @@ export const HelpCenterDrawerSplitView: React.FC<HelpCenterDrawerSplitViewProps>
                       cursor: 'pointer'
                     }}
                   >
-                    Send Ticket
+                    {tr('Submit Ticket', selectedLanguage)}
                   </button>
                 </div>
               </form>

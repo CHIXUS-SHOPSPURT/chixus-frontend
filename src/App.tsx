@@ -68,6 +68,8 @@ import SettingsDrawerSplitView from './components/SettingsDrawerSplitView';
 import HelpCenterDrawerSplitView from './components/HelpCenterDrawerSplitView';
 import NetworkStatusIcon from './components/NetworkStatusIcon';
 import { OnboardingWelcomeScreen } from './components/OnboardingWelcomeScreen';
+import { ChixusLoadingSplash } from './components/ChixusLoadingSplash';
+import { tr, isRtlLanguage } from './i18n/translations';
 import { sharedNetworkConnectivityMonitor } from './services/networkConnectivityService';
 import {
   CHIXUS_PRIVACY_POLICY,
@@ -105,13 +107,16 @@ import {
   isHardcodedTestIdentifier,
   loginWithIdentifier,
   logoutSession,
+  mergeRemoteWithLocalPreferences,
   normalizeAccountProfile,
   normalizePreferences,
+  readPersistedLocalPreferences,
   registerOperatorAccount,
   registerUnauthorizedHandler,
   requestEmailAddressChange,
   requestPhoneNumberChange,
-  saveUserPreferences
+  saveUserPreferences,
+  writePersistedLocalPreferences
 } from './services/accountService';
 import {
   CHIXUS_AI_BOT_ID,
@@ -1388,6 +1393,9 @@ export function App() {
       if (!hasValidSessionToken) {
         clearAuthToken();
         localStorage.setItem('chixus_explicit_logout_v1', 'true');
+        if (!hasVerifyAction && savedStage === 'main_app' && localStorage.getItem('chixus_guest_mode_v1') === 'true') {
+          return 'main_app';
+        }
       }
 
       if (hasVerifyAction) {
@@ -1615,9 +1623,9 @@ export function App() {
   const [userPreferences, setUserPreferences] = useState<UserPreferencesPayload>(() => {
     try {
       const savedId = (localStorage.getItem('chixus_generated_secret_id') || '').trim().toUpperCase();
-      const rawCache = savedId ? localStorage.getItem(`chixus_prefs_cache_v1_${savedId}`) : null;
-      if (rawCache) {
-        return normalizePreferences(JSON.parse(rawCache));
+      const persisted = readPersistedLocalPreferences(savedId);
+      if (persisted?.prefs) {
+        return persisted.prefs;
       }
     } catch {}
     return DEFAULT_USER_PREFERENCES;
@@ -1625,9 +1633,50 @@ export function App() {
   const userPreferencesRef = useRef<UserPreferencesPayload>(userPreferences);
   useEffect(() => {
     userPreferencesRef.current = userPreferences;
+    try {
+      if (typeof document !== 'undefined') {
+        document.documentElement.dir = isRtlLanguage(userPreferences.language) ? 'rtl' : 'ltr';
+      }
+    } catch {}
   }, [userPreferences]);
   const [isLoadingPreferences, setIsLoadingPreferences] = useState<boolean>(false);
-  const [preferencesSyncError, setPreferencesSyncError] = useState<string | null>(null);
+  const [isGuestMode, setIsGuestMode] = useState<boolean>(() => {
+    try {
+      if (hasValidStoredAuthToken()) return false;
+      return localStorage.getItem('chixus_guest_mode_v1') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [authPromptModal, setAuthPromptModal] = useState<{
+    isOpen: boolean;
+    targetTab: 'feed' | 'inspect' | 'metrics' | 'messages' | 'search' | 'settings';
+    action?: string;
+  } | null>(null);
+  const [pendingGuestRedirect, setPendingGuestRedirect] = useState<{
+    tab: 'feed' | 'inspect' | 'metrics' | 'messages' | 'search' | 'settings';
+    action?: string;
+  } | null>(null);
+  const [showTransitionSplash, setShowTransitionSplash] = useState<boolean>(false);
+  const [guestQorvexMessages, setGuestQorvexMessages] = useState<ChatMessage[]>(() => [
+    {
+      id: 'msg-chixus-ai-welcome-guest',
+      contactId: CHIXUS_AI_BOT_ID,
+      sender: 'them',
+      text: 'Hello! I am Qorvex...\n\nAsk me any question.',
+      timestamp: 'Online',
+      deliveryStatus: 'read'
+    }
+  ]);
+  const requireAuthForAction = (
+    targetTab: 'feed' | 'inspect' | 'metrics' | 'messages' | 'search' | 'settings' = activeTab,
+    action?: string
+  ): boolean => {
+    if (!isGuestMode) return true;
+    sound.playClick();
+    setAuthPromptModal({ isOpen: true, targetTab, action });
+    return false;
+  };
   const seenIncomingDmIdsRef = useRef<Set<string>>(new Set());
   const hasCompletedInitialDmSyncRef = useRef<boolean>(false);
   const appUpdateCheckedRef = useRef<boolean>(false);
@@ -1682,15 +1731,31 @@ export function App() {
     trackPageView(routePath, routeTitle);
   }, [onboardStage, activeTab]);
 
-  // Dark/Light Theme (Silver Metallic Palette Default: false = Silver Mode)
+  // Dark/Light Theme (Black/Dark Mode Default: true = Dark Mode, permanent until user changes it)
   const [darkModeTheme, setDarkModeTheme] = useState<boolean>(() => {
     try {
+      const savedId = (localStorage.getItem('chixus_generated_secret_id') || '').trim().toUpperCase();
+      const persisted = readPersistedLocalPreferences(savedId);
+      if (persisted?.prefs?.theme === 'white') return false;
+      if (persisted?.prefs?.theme === 'dark') return true;
+      if (persisted?.prefs?.theme === 'system' && typeof window !== 'undefined' && window.matchMedia) {
+        return window.matchMedia('(prefers-color-scheme: dark)').matches;
+      }
       const saved = localStorage.getItem('chixus_dark_mode_v7');
-      return saved !== null ? JSON.parse(saved) : false;
+      return saved !== null ? JSON.parse(saved) : true;
     } catch {
-      return false;
+      return true;
     }
   });
+
+  useEffect(() => {
+    try {
+      if (typeof document !== 'undefined') {
+        document.documentElement.classList.toggle('dark', darkModeTheme);
+      }
+      localStorage.setItem('chixus_dark_mode_v7', JSON.stringify(darkModeTheme));
+    } catch {}
+  }, [darkModeTheme]);
 
   // UI Drawers & Modals
   const [isDossierDrawerOpen, setIsDossierDrawerOpen] = useState(false);
@@ -1826,15 +1891,19 @@ export function App() {
       try {
         localStorage.setItem('chixus_dark_mode_v7', JSON.stringify(false));
       } catch {}
+    } else if (normalized.theme === 'system' && typeof window !== 'undefined' && window.matchMedia) {
+      const sysDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      setDarkModeTheme(sysDark);
+      try {
+        localStorage.setItem('chixus_dark_mode_v7', JSON.stringify(sysDark));
+      } catch {}
     }
 
     try {
       const activeId = (nodeIdOverride || localStorage.getItem('chixus_generated_secret_id') || currentUserProfile?.secretId || '')
         .trim()
         .toUpperCase();
-      if (activeId) {
-        localStorage.setItem(`chixus_prefs_cache_v1_${activeId}`, JSON.stringify(normalized));
-      }
+      writePersistedLocalPreferences(normalized, activeId, Date.now());
       localStorage.setItem('chixus_sound_feedback_enabled_v1', normalized.soundFeedback ? 'true' : 'false');
       localStorage.setItem('chixus_id_public_visibility_v1', normalized.isIdPublic ? 'true' : 'false');
       localStorage.setItem('chixus_ai_access_permission_v1', normalized.aiAccessLevel === 'none' ? 'denied' : normalized.aiAccessLevel);
@@ -1890,30 +1959,23 @@ export function App() {
   };
 
   const loadAccountAndPreferencesFromBackend = async () => {
-    if (!getAuthToken()) return;
+    if (isGuestMode || !getAuthToken()) return;
     setIsLoadingPreferences(true);
-    setPreferencesSyncError(null);
 
     const [acctRes, prefRes] = await Promise.allSettled([
       fetchAuthenticatedAccount(),
       fetchUserPreferences()
     ]);
 
+    const resolvedId = acctRes.status === 'fulfilled' ? acctRes.value.chixus_id : currentUserProfile?.secretId;
     if (acctRes.status === 'fulfilled') {
       applyAuthenticatedIdentity(acctRes.value);
     }
     if (prefRes.status === 'fulfilled') {
       applyPreferencesLocally(
-        prefRes.value,
-        acctRes.status === 'fulfilled' ? acctRes.value.chixus_id : undefined
+        mergeRemoteWithLocalPreferences(prefRes.value, resolvedId),
+        resolvedId
       );
-      setPreferencesSyncError(null);
-    } else {
-      const errMsg =
-        prefRes.reason instanceof Error
-          ? prefRes.reason.message
-          : 'Failed to load preferences from backend.';
-      setPreferencesSyncError(errMsg);
     }
 
     setIsLoadingPreferences(false);
@@ -1925,17 +1987,12 @@ export function App() {
   ): Promise<{ ok: boolean; error?: string }> => {
     // Always apply & persist locally first so Display, Languages, Accessibility, and Sound never fail offline
     applyPreferencesLocally(nextPrefs);
-    setPreferencesSyncError(null);
 
-    if (getAuthToken()) {
+    if (getAuthToken() && !isGuestMode) {
       // Best-effort silent background sync to backend when reachable
-      void saveUserPreferences(nextPrefs)
-        .then((confirmed) => {
-          applyPreferencesLocally(confirmed);
-        })
-        .catch(() => {
-          // Silently retain local preference without reverting or showing Failed to fetch
-        });
+      void saveUserPreferences(nextPrefs).catch(() => {
+        // Silently retain local preference without reverting or showing Failed to fetch
+      });
     }
 
     return { ok: true };
@@ -1963,10 +2020,8 @@ export function App() {
       triggerToast('🔇 Sound feedback muted (Off).');
     }
 
-    if (getAuthToken() && onboardStage === 'main_app') {
-      void saveUserPreferences(nextPrefs)
-        .then((confirmed) => applyPreferencesLocally(confirmed))
-        .catch(() => {});
+    if (getAuthToken() && !isGuestMode && onboardStage === 'main_app') {
+      void saveUserPreferences(nextPrefs).catch(() => {});
     }
     return true;
   };
@@ -2096,8 +2151,9 @@ export function App() {
   useEffect(() => {
     registerUnauthorizedHandler(() => {
       clearAuthToken();
-      setPreferencesSyncError('Session expired or unauthorized. Please log in again.');
+      setIsGuestMode(false);
       try {
+        localStorage.removeItem('chixus_guest_mode_v1');
         localStorage.setItem('chixus_explicit_logout_v1', 'true');
         localStorage.setItem('chixus_onboard_stage_v1', 'login');
       } catch {}
@@ -2202,14 +2258,14 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (onboardStage !== 'main_app') return;
+    if (onboardStage !== 'main_app' || isGuestMode) return;
     if (getAuthToken()) {
       void loadAccountAndPreferencesFromBackend();
     }
-  }, [onboardStage]);
+  }, [onboardStage, isGuestMode]);
 
   useEffect(() => {
-    if (onboardStage !== 'main_app' || appUpdateCheckedRef.current) return;
+    if (onboardStage !== 'main_app' || isGuestMode || appUpdateCheckedRef.current) return;
     if (!userPreferences.inAppAlerts.appUpdate) return;
     appUpdateCheckedRef.current = true;
 
@@ -2667,10 +2723,16 @@ export function App() {
               try {
                 localStorage.setItem('chixus_terms_accepted_v1', 'true');
                 localStorage.removeItem('chixus_explicit_logout_v1');
+                localStorage.removeItem('chixus_guest_mode_v1');
                 localStorage.setItem('chixus_onboard_stage_v1', 'main_app');
                 localStorage.setItem('chixus_onboarding_completed_v1', 'true');
               } catch {}
+              const targetTab = pendingGuestRedirect?.tab || 'feed';
+              setIsGuestMode(false);
+              setActiveTab(targetTab);
+              setPendingGuestRedirect(null);
               setShowTermsAgreementModal(false);
+              setShowTransitionSplash(true);
               setOnboardStage('main_app');
               triggerToast(`✨ Secure Node Activated. Welcome to CHIXUS!`);
             }}
@@ -3329,6 +3391,7 @@ export function App() {
 
   // Universal helper to get current user's active Hardware Node ID
   const getMyActiveNodeId = (): string => {
+    if (isGuestMode) return '';
     try {
       const savedProfRaw = localStorage.getItem('chixus_current_user_profile');
       const savedProf = savedProfRaw ? JSON.parse(savedProfRaw) : null;
@@ -3507,7 +3570,7 @@ export function App() {
 
   // Record userName in known names history and automatically keep strictly own posts, reshares, and comments synced with current profile name, headline, and avatar
   useEffect(() => {
-    if (onboardStage !== 'main_app') return;
+    if (onboardStage !== 'main_app' || isGuestMode) return;
     const myNodeId = getMyActiveNodeId();
     const profSecretId = String(currentUserProfile?.secretId || '').trim().toUpperCase();
     const lsSecretId = String(localStorage.getItem('chixus_generated_secret_id') || '').trim().toUpperCase();
@@ -3615,8 +3678,9 @@ export function App() {
 
   // Persist feed posts locally whenever updated
   useEffect(() => {
+    if (isGuestMode) return;
     safeSetLocalStorage('chixus_feed_posts_v7', JSON.stringify(posts));
-  }, [posts]);
+  }, [posts, isGuestMode]);
 
   // Auto-sync current logged-in operator profile & all local registered accounts + bidirectional remote posts with backend SQLite
   useEffect(() => {
@@ -3635,7 +3699,7 @@ export function App() {
         } catch {}
 
         // Sync all locally registered accounts (with their real email, phone, and 4-digit password) to backend SQLite
-        if (Array.isArray(regList)) {
+        if (!isGuestMode && Array.isArray(regList)) {
           for (const acc of regList) {
             const accId = (acc?.secretId || acc?.frontendId || acc?.backendId || '').trim().toUpperCase();
             if (accId && /^CHI-[A-Z0-9]{4}-[A-Z]{2,3}$/i.test(accId)) {
@@ -4655,6 +4719,7 @@ export function App() {
   };
 
   const startSpatialPanScan = () => {
+    if (!requireAuthForAction('inspect', 'inspect_scan')) return;
     if (!isLiveCameraActive) {
       startLiveCameraStream();
     }
@@ -4730,6 +4795,7 @@ export function App() {
   };
 
   const handleExecuteRunScanFromPopup = async () => {
+    if (!requireAuthForAction('inspect', 'inspect_scan')) return;
     setShowRunScanPopup(false);
     sound.playClick();
     const targetFrame = bestCapturedFrame || selectedCircuitImage;
@@ -4789,6 +4855,7 @@ export function App() {
 
   // Hydrate persistent ledger from IndexedDB on startup and sanitize legacy fake scans
   useEffect(() => {
+    if (isGuestMode) return;
     let isMounted = true;
     async function loadIndexedDB() {
       try {
@@ -4810,7 +4877,7 @@ export function App() {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [isGuestMode]);
 
   // Messaging Contacts & Active Chat (Includes Official Qorvex Bot)
   const defaultChixusBotContact: Contact = {
@@ -5099,45 +5166,19 @@ export function App() {
     return isMatchOp || isMatchName;
   };
 
-  const handleToggleContactOnlineStatus = (contactId: string, contactName: string) => {
-    if (contactId === CHIXUS_AI_BOT_ID) {
-      triggerToast('ℹ️ Qorvex assistant is always available online 24/7.');
-      return;
-    }
-    let newStatus = 'Offline';
-    setContacts((prev) => {
-      const updated = prev.map((c) => {
-        if (c.id === contactId) {
-          const currentlyOnline = isUserTrulyOnline(c);
-          newStatus = currentlyOnline ? 'Offline' : 'Online';
-          return {
-            ...c,
-            status: newStatus,
-            isSimulatedOnline: newStatus === 'Online',
-            isSimulatedOffline: newStatus === 'Offline'
-          };
-        }
-        return c;
-      });
-      safeSaveContactsToLocalStorage(updated);
-      return updated;
-    });
-    sound.playClick();
-    triggerToast(`${newStatus === 'Online' ? '🟢' : '⚪'} Set ${contactName} status to ${newStatus}.`);
-  };
-
-  // Live Presence Synchronization with Backend (/api/presence/heartbeat & /api/presence/online-users)
+  // Live Presence & Real Message Receipt Synchronization with Backend (/api/presence/* & /api/messages/receipts)
   useEffect(() => {
+    if (isGuestMode || onboardStage !== 'main_app') return;
     let timer: any = null;
     let isCancelled = false;
 
+    const statusRank = (s?: 'sent' | 'delivered' | 'read') => (s === 'read' ? 3 : s === 'delivered' ? 2 : 1);
+
     const syncPresence = async () => {
       try {
-        const myOpId =
-          currentUserProfile?.secretId ||
-          localStorage.getItem('chixus_current_operator_id_v8') ||
-          'CHI-OP-001';
+        const myOpId = getMyActiveNodeId() || currentUserProfile?.secretId || '';
         const myName = userName || 'Operator';
+        if (!myOpId) return;
 
         const heartbeatRes = await fetch(`${API_BASE_URL}/api/presence/heartbeat`, {
           method: 'POST',
@@ -5168,42 +5209,86 @@ export function App() {
             }
           }
         }
+
+        const receiptRes = await fetch(
+          `${API_BASE_URL}/api/messages/receipts?operatorId=${encodeURIComponent(myOpId)}`
+        ).catch(() => null);
+        if (receiptRes && receiptRes.ok) {
+          const rData = await receiptRes.json().catch(() => null);
+          const receiptsMap = (rData && rData.receipts) || {};
+          if (!isCancelled && receiptsMap && typeof receiptsMap === 'object') {
+            setChatMessages((prev) => {
+              let changed = false;
+              const next = prev.map((m) => {
+                if (m.sender !== 'me') return m;
+                const serverRec = receiptsMap[m.id];
+                const serverStatus = (typeof serverRec === 'string' ? serverRec : serverRec?.status) as
+                  | 'sent'
+                  | 'delivered'
+                  | 'read'
+                  | undefined;
+                if (serverStatus && statusRank(serverStatus) > statusRank(m.deliveryStatus)) {
+                  changed = true;
+                  return { ...m, deliveryStatus: serverStatus };
+                }
+                return m;
+              });
+              return changed ? next : prev;
+            });
+          }
+        }
       } catch {}
     };
 
     syncPresence();
-    timer = setInterval(syncPresence, 15000);
+    timer = setInterval(syncPresence, 10000);
 
     return () => {
       isCancelled = true;
       if (timer) clearInterval(timer);
     };
-  }, [userName, currentUserProfile?.secretId, presenceVisibility]);
+  }, [onboardStage, isGuestMode, userName, currentUserProfile?.secretId, presenceVisibility]);
 
-  // Mark messages in the active chat conversation as read ('green good') ONLY when recipient is truly online
+  // Mark messages in the active chat conversation as read (WhatsApp-style: only when receiver actually opens the chat)
   useEffect(() => {
-    if (isChatOpen && activeContactId && readReceiptsEnabled) {
-      const peer = contacts.find((c) => c.id === activeContactId);
-      const isOnline = isUserTrulyOnline(peer);
-      // STRICT RULE: If recipient is offline, do NOT mark messages as read!
-      if (!isOnline && activeContactId !== CHIXUS_AI_BOT_ID) {
-        return;
-      }
+    if (isGuestMode || !isChatOpen || !activeContactId) return;
+
+    if (activeContactId === CHIXUS_AI_BOT_ID) {
+      if (!readReceiptsEnabled) return;
       setChatMessages((prev) => {
         let changed = false;
         const next = prev.map((m) => {
           if (m.contactId === activeContactId && m.sender === 'me' && m.deliveryStatus !== 'read') {
-            if (activeContactId === CHIXUS_AI_BOT_ID) {
-              changed = true;
-              return { ...m, deliveryStatus: 'read' as const };
-            }
+            changed = true;
+            return { ...m, deliveryStatus: 'read' as const };
           }
           return m;
         });
         return changed ? next : prev;
       });
+      return;
     }
-  }, [isChatOpen, activeContactId, readReceiptsEnabled, contacts, liveOnlineOperators, liveOnlineNames]);
+
+    const myOpId = getMyActiveNodeId() || currentUserProfile?.secretId || '';
+    const peer = contacts.find((c) => c.id === activeContactId);
+    let cleanPeerId = '';
+    if (activeContactId.startsWith('c-CHI-')) {
+      cleanPeerId = activeContactId.slice(2).trim().toUpperCase();
+    } else if (peer && peerProfiles[peer.name]?.verifiedId) {
+      cleanPeerId = String(peerProfiles[peer.name].verifiedId).trim().toUpperCase();
+    }
+    if (myOpId && cleanPeerId) {
+      fetch(`${API_BASE_URL}/api/messages/mark-read`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          readerId: myOpId,
+          peerId: cleanPeerId,
+          readReceiptsEnabled
+        })
+      }).catch(() => {});
+    }
+  }, [isGuestMode, isChatOpen, activeContactId, readReceiptsEnabled, contacts, chatMessages.length]);
 
   // Always ensure CHIXUS AI avatar in contacts is synchronized to current official CHIXUS_AI_BOT_AVATAR
   useEffect(() => {
@@ -5313,10 +5398,12 @@ export function App() {
 
   // Persist contacts and chatMessages to localStorage whenever updated
   useEffect(() => {
+    if (isGuestMode) return;
     safeSetLocalStorage('chixus_active_contacts_v9', JSON.stringify(contacts));
-  }, [contacts]);
+  }, [contacts, isGuestMode]);
 
   useEffect(() => {
+    if (isGuestMode) return;
     safeSetLocalStorage('chixus_chat_messages_v9', JSON.stringify(chatMessages));
     localforage.setItem('chixus_chat_messages_full_v9', chatMessages).catch(() => {});
 
@@ -5334,10 +5421,11 @@ export function App() {
         }
       }
     } catch {}
-  }, [chatMessages]);
+  }, [chatMessages, isGuestMode]);
 
   // Save current active operator's complete isolated vault so switching accounts or logging out never loses or mixes data
   const saveCurrentAccountVault = (overrideId?: string) => {
+    if (isGuestMode) return;
     try {
       const activeId = (overrideId || getMyActiveNodeId() || '').trim().toUpperCase();
       if (!activeId) return;
@@ -5444,12 +5532,13 @@ export function App() {
 
   // Continuously keep the active operator's isolated vault synced while in main_app
   useEffect(() => {
-    if (onboardStage !== 'main_app') return;
+    if (onboardStage !== 'main_app' || isGuestMode) return;
     const activeId = getMyActiveNodeId();
     if (!activeId) return;
     saveCurrentAccountVault(activeId);
   }, [
     onboardStage,
+    isGuestMode,
     userName,
     userHeadline,
     userLocation,
@@ -5886,7 +5975,7 @@ export function App() {
       }
     } catch {}
 
-    // Query Backend SQLite users table AND strictly verify the returned row matches the requested ID or name
+    // Query Backend SQLite users table with a fast 1200ms timeout so slow connections never stall profile opening
     let sqlRow: any = null;
     try {
       if (cleanTargetId || cleanTargetName) {
@@ -5894,7 +5983,13 @@ export function App() {
           ? `TRIM(UPPER(id))=UPPER('${cleanTargetId.replace(/'/g, "''")}') OR TRIM(UPPER(username))=UPPER('${cleanTargetId.replace(/'/g, "''")}')`
           : `LOWER(TRIM(full_name))=LOWER('${cleanTargetName.replace(/'/g, "''")}')`;
         const sqlQuery = `SELECT * FROM users WHERE ${whereClause} LIMIT 1`;
-        const sqlRes = await fetch(`${API_BASE_URL}/api/admin/sql?key=chixus_admin_2026&query=${encodeURIComponent(sqlQuery)}`);
+        const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        const timeoutId = controller ? window.setTimeout(() => controller.abort(), 1200) : null;
+        const sqlRes = await fetch(
+          `${API_BASE_URL}/api/admin/sql?key=chixus_admin_2026&query=${encodeURIComponent(sqlQuery)}`,
+          controller ? { signal: controller.signal } : undefined
+        );
+        if (timeoutId !== null) window.clearTimeout(timeoutId);
         const sqlData = await sqlRes.json().catch(() => null);
         if (sqlRes.ok && sqlData && sqlData.status === 'success' && Array.isArray(sqlData.data) && sqlData.data.length > 0) {
           sqlRow =
@@ -6183,11 +6278,10 @@ export function App() {
     setIsProfileModalOpen(true);
   };
 
-  // Handler to open interactive profile for ANY person (with skeleton screen loading & strict per-account resolution)
+  // Handler to open interactive profile for ANY person instantly using cached data with background refresh
   const openPeerProfile = async (authorName: string, targetOperatorId?: string, initialTab: 'dossier' | 'message' = 'dossier') => {
     sound.playClick();
     const reqSeq = ++peerProfileRequestSeqRef.current;
-    setIsPeerProfileLoading(true);
     setPeerDossierActiveTab(initialTab);
     setPeerDossierQuickMsgInput('');
 
@@ -6249,6 +6343,7 @@ export function App() {
       : isAuthorCurrentUser(cleanAuthorName, cleanTargetId);
 
     if (isCurrentActiveAccount) {
+      setIsPeerProfileLoading(false);
       setSelectedPeerProfile({
         name: userName,
         badge: userHeadline || '',
@@ -6264,15 +6359,11 @@ export function App() {
         experiences: experiences || [],
         operator_id: myActiveId
       });
-      setTimeout(() => {
-        if (peerProfileRequestSeqRef.current === reqSeq) {
-          setIsPeerProfileLoading(false);
-        }
-      }, 220);
       return;
     }
 
     if (cleanAuthorName === 'Qorvex' || cleanAuthorName === 'Qordex' || cleanAuthorName === 'CHIXUS AI' || cleanAuthorName === CHIXUS_AI_BOT_ID || cleanTargetId === 'CHI-AI01-BOT') {
+      setIsPeerProfileLoading(false);
       setSelectedPeerProfile({
         name: 'Qorvex',
         avatar: CHIXUS_AI_BOT_AVATAR,
@@ -6294,11 +6385,6 @@ export function App() {
         ],
         operator_id: 'CHI-AI01-BOT'
       });
-      setTimeout(() => {
-        if (peerProfileRequestSeqRef.current === reqSeq) {
-          setIsPeerProfileLoading(false);
-        }
-      }, 220);
       return;
     }
 
@@ -6314,6 +6400,9 @@ export function App() {
         (cleanTargetId && (r.username || '').toUpperCase() === cleanTargetId) ||
         (!cleanTargetId && r.name.toLowerCase() === lowerAuth)
     );
+
+    const hasInstantPreview = Boolean(peer || matchedFromSearch || matchedFromReq || cleanAuthorName);
+    setIsPeerProfileLoading(!hasInstantPreview);
 
     const initialTargetId =
       cleanTargetId || matchedFromSearch?.operator_id || matchedFromReq?.username || (peer as any)?.verifiedId || '';
@@ -6333,7 +6422,7 @@ export function App() {
       ? chinazaAvatar
       : defaultBlankOperatorAvatar;
 
-    // Set initial preview while resolving full stored/backend details
+    // Set initial preview immediately while resolving full stored/backend details in background
     const initialProfileData = {
       name: matchedFromSearch?.name || matchedFromReq?.name || cleanAuthorName || initialTargetId,
       badge: peer?.badge || peer?.headline || matchedFromSearch?.headline || matchedFromReq?.role || '',
@@ -6420,16 +6509,15 @@ export function App() {
       }
     } catch {}
 
-    setTimeout(() => {
-      if (peerProfileRequestSeqRef.current === reqSeq) {
-        setIsPeerProfileLoading(false);
-      }
-    }, 200);
+    if (peerProfileRequestSeqRef.current === reqSeq) {
+      setIsPeerProfileLoading(false);
+    }
   };
 
   // 🌐 Asynchronous Operator Search Handler (CHIXUS ID, Phone Number, or Email)
   const handleSearchNode = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
+    if (!requireAuthForAction('search', 'search_user')) return;
     const query = (nodeSearchInput || '').trim();
 
     sound.playClick();
@@ -6519,6 +6607,7 @@ export function App() {
 
   // Dispatch a real cross-account connection request + notification to IndexedDB (localforage), localStorage, & SQLite
   const handleSendLinkRequest = async (targetName: string, explicitTargetId?: string) => {
+    if (!requireAuthForAction('feed', 'connect_peer')) return;
     sound.playSuccess();
     const myId = getMyActiveNodeId();
     const myName = userName || currentUserProfile?.fullName || myId;
@@ -6909,6 +6998,7 @@ export function App() {
     targetRole: string,
     messageText: string
   ) => {
+    if (!requireAuthForAction('messages', 'message_peer')) return;
     const cleanMsg = safeTrim(messageText);
     if (!cleanMsg) return;
     sound.playSuccess();
@@ -7038,6 +7128,26 @@ export function App() {
 
       const insNotifSql = `INSERT OR REPLACE INTO chixus_notifications (id, to_id, to_name, from_id, from_name, from_avatar, from_role, from_location, type, title, detail, created_at) VALUES ('${esc(notifId)}', '${esc(cleanTargetId)}', '${esc(targetName)}', '${esc(myId)}', '${esc(myName)}', '${safeAvSql}', '${esc(userHeadline || 'Sovereign Grid Operator')}', '${esc(userLocation || 'Sector Relay // Nigeria')}', 'direct_message', '${esc(`💬 New Message from ${myName} (${myId})`)}', '${esc(`"${cleanMsg}" — Tap to open ${myName}'s profile & reply in the Message tab.`)}', ${nowMs})`;
       await fetch(`${API_BASE_URL}/api/admin/sql?key=chixus_admin_2026&query=${encodeURIComponent(insNotifSql)}`).catch(() => {});
+
+      if (myId && cleanTargetId) {
+        const sendReceiptRes = await fetch(`${API_BASE_URL}/api/messages/send`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messageId: msgId,
+            senderId: myId,
+            recipientId: cleanTargetId,
+            recipientName: targetName
+          })
+        }).catch(() => null);
+        const sendReceiptData = sendReceiptRes ? await sendReceiptRes.json().catch(() => null) : null;
+        if (sendReceiptData?.deliveryStatus) {
+          const serverStatus = sendReceiptData.deliveryStatus as 'sent' | 'delivered' | 'read';
+          setChatMessages((prev) =>
+            prev.map((m) => (m.id === msgId ? { ...m, deliveryStatus: serverStatus } : m))
+          );
+        }
+      }
     } catch {}
 
     triggerToast(`💬 Message sent to ${targetName}!`);
@@ -7045,7 +7155,7 @@ export function App() {
 
   // Real-time background synchronization for incoming Connection Requests, Accepted Links, Bell Notifications, and Direct Messages
   useEffect(() => {
-    if (onboardStage !== 'main_app') return;
+    if (onboardStage !== 'main_app' || isGuestMode) return;
     let isMounted = true;
 
     const syncConnectionAndNotificationEvents = async () => {
@@ -7973,6 +8083,7 @@ export function App() {
 
   // Quick Connect Node Action
   const handleConnectAndNotify = (targetName: string, explicitTargetId?: string) => {
+    if (!requireAuthForAction('feed', 'connect_peer')) return;
     handleSendLinkRequest(targetName, explicitTargetId);
     setPeerProfiles((prev) => {
       const existing = prev[targetName];
@@ -7992,6 +8103,7 @@ export function App() {
 
   // Open Structured Endorsement Modal (LinkedIn-Style)
   const handleOpenEndorsementModal = (targetName: string) => {
+    if (!requireAuthForAction('feed', 'endorse_peer')) return;
     if (!targetName || targetName.toLowerCase() === userName.toLowerCase()) {
       triggerToast('⚠️ You cannot endorse your own node.');
       return;
@@ -8546,6 +8658,7 @@ export function App() {
   // Feed Event Handlers (Per-Account Multi-Operator Likes & SQLite Sync)
   // -------------------------------------------------------------
   const handleToggleLike = (postId: string) => {
+    if (!requireAuthForAction('feed', 'like_post')) return;
     sound.playClick();
     const myId = (getMyActiveNodeId() || 'LOCAL_OPERATOR').trim().toUpperCase();
     const likesMap = getGlobalPostLikesMap();
@@ -8659,6 +8772,7 @@ export function App() {
   };
 
   const handleAddComment = (postId: string, text: string) => {
+    if (!requireAuthForAction('feed', 'comment_post')) return;
     const trimmedText = safeTrim(text);
     if (!trimmedText) return;
     sound.playClick();
@@ -8682,10 +8796,11 @@ export function App() {
 
   const handleCreatePost = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!requireAuthForAction('feed', 'create_post')) return;
     const cleanContent = safeTrim(newPostContent);
     if (!cleanContent && !newPostImage) return;
     sound.playSuccess();
-    const myNodeId = getMyActiveNodeId() || `CHI-1342-${selectedRegion.suffix}`;
+    const myNodeId = getMyActiveNodeId() || '';
     const nowPostMs = Date.now();
     const newPost: PostItem = {
       id: `post-${nowPostMs}`,
@@ -8731,8 +8846,9 @@ export function App() {
 
   // Share post internally to the CHIXUS Network Feed (Clean Tamper-Proof Embedded Reshare Card)
   const handleShareToInternalFeed = async (targetPost: PostItem, customNote?: string) => {
+    if (!requireAuthForAction('feed', 'share_post')) return;
     sound.playSuccess();
-    const myNodeId = getMyActiveNodeId() || `CHI-1342-${selectedRegion.suffix}`;
+    const myNodeId = getMyActiveNodeId() || '';
     const cleanNote = safeTrim(customNote ?? shareFeedComment);
     const isTargetMine = isPostOwnedByCurrentUser(targetPost);
     const sourceOriginal: ResharedPostData = targetPost.resharedPost
@@ -8801,6 +8917,7 @@ export function App() {
 
   // Share post internally to an Operator's Direct Message Inbox in CHIXUS Messages
   const handleShareToInternalMessage = async (targetPost: PostItem, targetRecipient?: string) => {
+    if (!requireAuthForAction('feed', 'share_post')) return;
     const rawRecipient = safeTrim(targetRecipient ?? shareRecipientInput) || targetPost.author || 'Operator Peer';
     sound.playSuccess();
 
@@ -8958,6 +9075,7 @@ export function App() {
   };
 
   const handleSnapLiveCameraAndVerify = async () => {
+    if (!requireAuthForAction('inspect', 'inspect_scan')) return;
     if (!liveVideoRef.current || !isLiveCameraActive) {
       triggerToast('⚠️ Starting live camera sensor first...');
       await startLiveCameraStream();
@@ -9031,6 +9149,7 @@ export function App() {
   };
 
   const startWebSocketStream = () => {
+    if (!requireAuthForAction('inspect', 'inspect_scan')) return;
     stopWebSocketStream();
 
     const connectWs = (url: string, isFallback = false) => {
@@ -9113,6 +9232,7 @@ export function App() {
   // (POST http://localhost:8000/api/v1/inspect-scan via FormData)
   // -------------------------------------------------------------
   const handleCaptureAndInspect = async () => {
+    if (!requireAuthForAction('inspect', 'inspect_scan')) return;
     sound.playClick();
     if (!liveVideoRef.current || !isLiveCameraActive) {
       triggerToast('⚠️ Please open rear camera first to capture and inspect.');
@@ -9391,6 +9511,7 @@ export function App() {
 
   // Export Fraud-Proof Ledger as CSV
   const handleExportLedgerCsv = () => {
+    if (!requireAuthForAction('metrics', 'export_ledger')) return;
     sound.playClick();
     if (scanLogs.length === 0) {
       triggerToast('⚠️ No scan logs in the Fraud-Proof Ledger to export yet.');
@@ -9439,6 +9560,7 @@ export function App() {
 
   // Export Fraud-Proof Ledger as a standalone PDF file
   const handleExportLedgerPdf = () => {
+    if (!requireAuthForAction('metrics', 'export_ledger')) return;
     sound.playClick();
     if (scanLogs.length === 0) {
       triggerToast('⚠️ No scan logs in the Fraud-Proof Ledger to export yet.');
@@ -9449,7 +9571,7 @@ export function App() {
       currentUserProfile?.secretId ||
       generatedSecretID ||
       localStorage.getItem('chixus_generated_secret_id') ||
-      `CHI-1342-${selectedRegion.suffix}`;
+      '';
 
     const sanitizePdfText = (input: string) =>
       String(input || '')
@@ -9693,11 +9815,13 @@ export function App() {
     sound.playClick();
     saveCurrentAccountVault();
     void logoutSession();
-    setPreferencesSyncError(null);
+    setIsGuestMode(false);
+    setPendingGuestRedirect(null);
     seenIncomingDmIdsRef.current.clear();
     hasCompletedInitialDmSyncRef.current = false;
     appUpdateCheckedRef.current = false;
     try {
+      localStorage.removeItem('chixus_guest_mode_v1');
       localStorage.setItem('chixus_explicit_logout_v1', 'true');
       localStorage.setItem('chixus_onboard_stage_v1', 'login');
     } catch {}
@@ -10379,27 +10503,32 @@ export function App() {
   };
 
   const buildLiveAppContext = (): ChixusLiveAppContext => {
-    const myOpId =
-      currentUserProfile?.secretId ||
-      generatedSecretID ||
-      localStorage.getItem('chixus_generated_secret_id') ||
-      `CHI-1342-${selectedRegion.suffix}`;
+    const myOpId = isGuestMode
+      ? ''
+      : currentUserProfile?.secretId ||
+        generatedSecretID ||
+        localStorage.getItem('chixus_generated_secret_id') ||
+        '';
+    const visibleContacts = isGuestMode ? [defaultChixusBotContact] : contacts;
+    const visibleMessages = isGuestMode ? guestQorvexMessages : chatMessages;
 
     return {
       currentUser: {
-        name: userName,
+        name: isGuestMode ? 'Guest' : userName,
         operatorId: myOpId,
-        starTier: currentUserProfile?.starTier || '★',
-        headline: userHeadline,
-        location: userLocation,
-        summary: executiveSummary,
-        deploymentsCount: experiences.length,
-        deployments: experiences.slice(0, 8).map((e) => ({
-          role: e.role,
-          company: e.company,
-          description: e.description
-        })),
-        endorsementsCount: profileComments.filter((pc) => !isFakeEndorsement(pc)).length
+        starTier: isGuestMode ? '★' : (currentUserProfile?.starTier || '★'),
+        headline: isGuestMode ? '' : userHeadline,
+        location: isGuestMode ? '' : userLocation,
+        summary: isGuestMode ? '' : executiveSummary,
+        deploymentsCount: isGuestMode ? 0 : experiences.length,
+        deployments: isGuestMode
+          ? []
+          : experiences.slice(0, 8).map((e) => ({
+              role: e.role,
+              company: e.company,
+              description: e.description
+            })),
+        endorsementsCount: isGuestMode ? 0 : profileComments.filter((pc) => !isFakeEndorsement(pc)).length
       },
       settings: {
         theme: darkModeTheme ? 'Dark Mode (High-Tech Charcoal Dark)' : 'Light Mode (Brushed Metallic Silver)',
@@ -10411,10 +10540,10 @@ export function App() {
         voiceLanguage: customTribeInput.trim() || selectedTribeVoice
       },
       inspector: {
-        inspectionsConducted: userInspectionsConducted,
-        faultsIsolated: userFaultsIsolated,
-        aiScanAccuracy: userAiScanAccuracy,
-        latestScan: scanResult
+        inspectionsConducted: isGuestMode ? 0 : userInspectionsConducted,
+        faultsIsolated: isGuestMode ? 0 : userFaultsIsolated,
+        aiScanAccuracy: isGuestMode ? '0.0%' : userAiScanAccuracy,
+        latestScan: !isGuestMode && scanResult
           ? {
               status: scanResult.status,
               label: scanResult.label,
@@ -10425,13 +10554,15 @@ export function App() {
               detectedObject: preAiObjectResult?.detectedObjectClass
             }
           : null,
-        recentScanLogs: scanLogs.slice(0, 8).map((l) => ({
-          id: l.id,
-          fileName: l.fileName,
-          status: l.status,
-          accuracy: l.accuracy,
-          timestamp: l.timestamp
-        }))
+        recentScanLogs: isGuestMode
+          ? []
+          : scanLogs.slice(0, 8).map((l) => ({
+              id: l.id,
+              fileName: l.fileName,
+              status: l.status,
+              accuracy: l.accuracy,
+              timestamp: l.timestamp
+            }))
       },
       feedPosts: posts.slice(0, 15).map((p) => ({
         id: p.id,
@@ -10452,11 +10583,11 @@ export function App() {
           : null
       })),
       messages: {
-        contactsCount: contacts.length,
-        contactsList: contacts.map((c) => `${c.name} (${c.isBlocked ? 'Blocked' : c.status})`),
-        pinnedMessagesCount: chatMessages.filter((m) => m.isPinned).length
+        contactsCount: visibleContacts.length,
+        contactsList: visibleContacts.map((c) => `${c.name} (${c.isBlocked ? 'Blocked' : c.status})`),
+        pinnedMessagesCount: visibleMessages.filter((m) => m.isPinned).length
       },
-      userActivityLog: userActivityLog.slice(0, 20)
+      userActivityLog: isGuestMode ? [] : userActivityLog.slice(0, 20)
     };
   };
 
@@ -10688,7 +10819,12 @@ export function App() {
     const cleanChatText = cleanAiMessageText(safeTrim(quickQuestionOverride ?? newChatText));
     if (!cleanChatText && !chatImageAttachment && !chatFileAttachment && !activeVoiceNoteUrl) return;
     const targetContactId = activeContactId || CHIXUS_AI_BOT_ID;
-    const currentPeer = contacts.find((c) => c.id === targetContactId);
+    const currentPeer = (isGuestMode ? [defaultChixusBotContact] : contacts).find((c) => c.id === targetContactId);
+    const isChixusAiBot = targetContactId === CHIXUS_AI_BOT_ID || currentPeer?.name === 'Qorvex' || currentPeer?.name === 'Qordex' || currentPeer?.name === 'CHIXUS AI';
+    if (isGuestMode && !isChixusAiBot) {
+      requireAuthForAction('messages', 'message_peer');
+      return;
+    }
     if (currentPeer?.isBlocked) {
       triggerToast(`🚫 Cannot send message — ${currentPeer.name} is blocked. Hold their profile for 3 seconds to unblock.`);
       return;
@@ -10698,8 +10834,7 @@ export function App() {
     const attachedFile = chatFileAttachment || undefined;
     const attachedAudio = activeVoiceNoteUrl || undefined;
     const attachedAudioTrans = chatVoiceNoteTranscript || undefined;
-    const isChixusAiBot = targetContactId === CHIXUS_AI_BOT_ID || currentPeer?.name === 'Qorvex' || currentPeer?.name === 'Qordex' || currentPeer?.name === 'CHIXUS AI';
-    const myOpId = getMyActiveNodeId() || currentUserProfile?.secretId || generatedSecretID || localStorage.getItem('chixus_generated_secret_id') || '';
+    const myOpId = isGuestMode ? '' : (getMyActiveNodeId() || currentUserProfile?.secretId || generatedSecretID || localStorage.getItem('chixus_generated_secret_id') || '');
     const nowMs = Date.now();
     const timeStr = new Date(nowMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
@@ -10766,7 +10901,7 @@ export function App() {
       timestamp: timeStr,
       deliveryStatus: initialDeliveryStatus
     };
-    const recentHistory = chatMessages
+    const recentHistory = (isGuestMode ? guestQorvexMessages : chatMessages)
       .filter((m) => m.contactId === targetContactId && !isAutoGeneratedPeerReply(m.text))
       .slice(-10)
       .map((m) => ({
@@ -10776,26 +10911,13 @@ export function App() {
         fileContent: m.fileAttachment?.content ? m.fileAttachment.content.slice(0, 8000) : undefined
       }));
 
-    setChatMessages((prev) => [...prev, newMsg]);
-    moveContactToTop(targetContactId);
-
-    // If peer is truly online, mark as seen / read (green ✓✓) after natural receipt interval (if read receipts enabled)
-    // CRITICAL: If peer is OFFLINE, NEVER schedule read status! Remains single gray check ✓!
-    if (!isChixusAiBot && isTargetOnline && readReceiptsEnabled) {
-      setTimeout(() => {
-        setChatMessages((prev) =>
-          prev.map((m) => {
-            if (m.id === msgId) {
-              const freshPeer = contacts.find((c) => c.id === targetContactId);
-              if (isUserTrulyOnline(freshPeer)) {
-                return { ...m, deliveryStatus: 'read' as const };
-              }
-            }
-            return m;
-          })
-        );
-      }, 2400);
+    if (isGuestMode) {
+      setGuestQorvexMessages((prev) => [...prev, newMsg]);
+    } else {
+      setChatMessages((prev) => [...prev, newMsg]);
+      moveContactToTop(targetContactId);
     }
+
     if (!quickQuestionOverride) {
       setNewChatText('');
       setChatImageAttachment(null);
@@ -10819,15 +10941,23 @@ export function App() {
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           deliveryStatus: 'read'
         };
-        setChatMessages((prev) =>
-          prev.map((m) => (m.id === msgId ? { ...m, deliveryStatus: 'read' as const } : m)).concat([blockedReply])
-        );
+        if (isGuestMode) {
+          setGuestQorvexMessages((prev) =>
+            prev.map((m) => (m.id === msgId ? { ...m, deliveryStatus: 'read' as const } : m)).concat([blockedReply])
+          );
+        } else {
+          setChatMessages((prev) =>
+            prev.map((m) => (m.id === msgId ? { ...m, deliveryStatus: 'read' as const } : m)).concat([blockedReply])
+          );
+        }
         return;
       }
 
-      logUserActivity(
-        `Asked Qorvex: "${displayMsgText.slice(0, 70)}"${attachedImg ? ' (with image)' : ''}${attachedFile ? ` (with file ${attachedFile.name})` : ''}${attachedAudio ? ' (with voice note)' : ''}`
-      );
+      if (!isGuestMode) {
+        logUserActivity(
+          `Asked Qorvex: "${displayMsgText.slice(0, 70)}"${attachedImg ? ' (with image)' : ''}${attachedFile ? ` (with file ${attachedFile.name})` : ''}${attachedAudio ? ' (with voice note)' : ''}`
+        );
+      }
 
       const initialSteps: Array<{ id: string; label: string; detail: string; status: 'done' | 'active' | 'pending' }> = [
         {
@@ -10910,10 +11040,16 @@ export function App() {
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         deliveryStatus: 'read'
       };
-      setChatMessages((prev) =>
-        prev.map((m) => (m.id === msgId ? { ...m, deliveryStatus: 'read' as const } : m)).concat([replyMsg])
-      );
-      moveContactToTop(targetContactId);
+      if (isGuestMode) {
+        setGuestQorvexMessages((prev) =>
+          prev.map((m) => (m.id === msgId ? { ...m, deliveryStatus: 'read' as const } : m)).concat([replyMsg])
+        );
+      } else {
+        setChatMessages((prev) =>
+          prev.map((m) => (m.id === msgId ? { ...m, deliveryStatus: 'read' as const } : m)).concat([replyMsg])
+        );
+        moveContactToTop(targetContactId);
+      }
       sound.playClick();
 
       // When a file is sent to Qorvex, automatically read what is inside aloud as well
@@ -11012,6 +11148,26 @@ export function App() {
 
           const insNotifSql = `INSERT OR REPLACE INTO chixus_notifications (id, to_id, to_name, from_id, from_name, from_avatar, from_role, from_location, type, title, detail, created_at) VALUES ('${esc(notifId)}', '${esc(cleanTargetId)}', '${esc(targetName)}', '${esc(myOpId)}', '${esc(myName)}', '${safeAvSql}', '${esc(userHeadline || 'Sovereign Grid Operator')}', '${esc(userLocation || 'Sector Relay // Nigeria')}', 'direct_message', '${esc(`💬 New Message from ${myName} (${myOpId})`)}', '${esc(`"${displayMsgText}" — Tap to open ${myName}'s profile & reply in the Message tab.`)}', ${nowMs})`;
           await fetch(`${API_BASE_URL}/api/admin/sql?key=chixus_admin_2026&query=${encodeURIComponent(insNotifSql)}`).catch(() => {});
+
+          if (myOpId && cleanTargetId) {
+            const sendReceiptRes = await fetch(`${API_BASE_URL}/api/messages/send`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                messageId: msgId,
+                senderId: myOpId,
+                recipientId: cleanTargetId,
+                recipientName: targetName
+              })
+            }).catch(() => null);
+            const sendReceiptData = sendReceiptRes ? await sendReceiptRes.json().catch(() => null) : null;
+            if (sendReceiptData?.deliveryStatus) {
+              const serverStatus = sendReceiptData.deliveryStatus as 'sent' | 'delivered' | 'read';
+              setChatMessages((prev) =>
+                prev.map((m) => (m.id === msgId ? { ...m, deliveryStatus: serverStatus } : m))
+              );
+            }
+          }
         } catch {}
       }
     }
@@ -11175,7 +11331,7 @@ export function App() {
     const updatedName = safeTrim(editNameInput) || previousName || 'Operator';
     const updatedHeadline = safeTrim(editHeadlineInput);
     const updatedLocation = safeTrim(editLocationInput) || userLocation;
-    const myNodeId = getMyActiveNodeId() || `CHI-1342-${selectedRegion.suffix}`;
+    const myNodeId = getMyActiveNodeId() || '';
 
     // Never allow a real custom avatar to be lost when saving profile text edits
     const finalAvatar = isRealCustomAvatar(editAvatarPreview)
@@ -11343,8 +11499,10 @@ export function App() {
     triggerToast(`✅ Profile & all older posts updated to ${updatedName}!`);
   };
 
-  const activeContact = contacts.find((c) => c.id === activeContactId) || contacts[0];
-  const activeConversation = chatMessages.filter(
+  const activeContact =
+    (isGuestMode ? [defaultChixusBotContact] : contacts).find((c) => c.id === activeContactId) ||
+    (isGuestMode ? defaultChixusBotContact : contacts[0]);
+  const activeConversation = (isGuestMode ? guestQorvexMessages : chatMessages).filter(
     (m) => m.contactId === activeContactId && !isAutoGeneratedPeerReply(m.text)
   );
 
@@ -11355,6 +11513,7 @@ export function App() {
     return (
       <OnboardingWelcomeScreen
         logoSrc={metallicLogo}
+        language={userPreferences.language}
         onGetStarted={() => {
           sound.playClick();
           setToastFeedback(null);
@@ -11365,6 +11524,20 @@ export function App() {
           sound.playClick();
           setToastFeedback(null);
           setOnboardStage('login');
+        }}
+        onExploreGuest={() => {
+          sound.playClick();
+          try {
+            clearAuthToken();
+            localStorage.setItem('chixus_guest_mode_v1', 'true');
+            localStorage.setItem('chixus_onboard_stage_v1', 'main_app');
+          } catch {}
+          setToastFeedback(null);
+          setIsGuestMode(true);
+          setActiveTab('feed');
+          setIsChatOpen(false);
+          setActiveContactId(CHIXUS_AI_BOT_ID);
+          setOnboardStage('main_app');
         }}
       />
     );
@@ -11746,7 +11919,6 @@ export function App() {
 
                     sound.playClick();
                     setIsConnectingLoading(true);
-                    setPreferencesSyncError(null);
 
                     try {
                       const session = await loginWithIdentifier(rawInput, passVal);
@@ -11797,10 +11969,12 @@ export function App() {
                       try {
                         localStorage.setItem('chixus_terms_accepted_v1', 'true');
                         localStorage.removeItem('chixus_explicit_logout_v1');
+                        localStorage.removeItem('chixus_guest_mode_v1');
                         localStorage.setItem('chixus_onboard_stage_v1', 'main_app');
                         localStorage.setItem('chixus_onboarding_completed_v1', 'true');
                       } catch {}
 
+                      setIsGuestMode(false);
                       setCurrentUserProfile(profileObj);
                       setGeneratedSecretID(opId);
                       setRegPhoneNumber(profileObj.phoneNumber);
@@ -11810,19 +11984,19 @@ export function App() {
                       setUserHeadline(profileObj.headline);
 
                       if (session.preferences) {
-                        applyPreferencesLocally(session.preferences, opId);
+                        applyPreferencesLocally(mergeRemoteWithLocalPreferences(session.preferences, opId), opId);
                       } else if (session.token) {
                         try {
                           const backendPrefs = await fetchUserPreferences();
-                          applyPreferencesLocally(backendPrefs, opId);
-                        } catch (prefErr: unknown) {
-                          const prefMsg =
-                            prefErr instanceof Error ? prefErr.message : 'Unable to fetch saved settings.';
-                          setPreferencesSyncError(prefMsg);
-                        }
+                          applyPreferencesLocally(mergeRemoteWithLocalPreferences(backendPrefs, opId), opId);
+                        } catch {}
                       }
 
+                      const targetTab = pendingGuestRedirect?.tab || 'feed';
+                      setActiveTab(targetTab);
+                      setPendingGuestRedirect(null);
                       setShowTermsAgreementModal(false);
+                      setShowTransitionSplash(true);
                       setOnboardStage('main_app');
                       sound.playSuccess();
                       triggerToast(`✨ Operator Node Connected: ${opId}`);
@@ -13080,15 +13254,15 @@ export function App() {
                           starLevel: 0
                         };
 
+                        setIsGuestMode(false);
                         setCurrentUserProfile(profileObj);
                         setGeneratedSecretID(finalAssignedId);
                         await hydrateOrResetAccountVault(finalAssignedId, profileObj, true);
 
-                        if (regResult.preferences) {
-                          applyPreferencesLocally(regResult.preferences, finalAssignedId);
-                        } else {
-                          applyPreferencesLocally(DEFAULT_USER_PREFERENCES, finalAssignedId);
-                        }
+                        applyPreferencesLocally(
+                          mergeRemoteWithLocalPreferences(regResult.preferences || DEFAULT_USER_PREFERENCES, finalAssignedId),
+                          finalAssignedId
+                        );
 
                         try {
                           safeSaveUserProfileToStorage(profileObj);
@@ -13097,6 +13271,7 @@ export function App() {
                           safeSetLocalStorage('chixus_user_location_v7', profileObj.location);
                           safeSetLocalStorage('chixus_headline_v7', profileObj.headline);
                           localStorage.removeItem('chixus_explicit_logout_v1');
+                          localStorage.removeItem('chixus_guest_mode_v1');
                         } catch {}
 
                         setTermsAgreedChecked(false);
@@ -13751,6 +13926,183 @@ export function App() {
         boxSizing: 'border-box'
       }}
     >
+      {showTransitionSplash && (
+        <ChixusLoadingSplash
+          logoSrc={metallicLogo}
+          showRedirectStatus={true}
+          language={userPreferences.language}
+          onComplete={() => setShowTransitionSplash(false)}
+        />
+      )}
+      {authPromptModal?.isOpen && (
+        <div
+          id="guest-auth-prompt-modal"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 10040,
+            backgroundColor: 'rgba(4, 7, 14, 0.84)',
+            backdropFilter: 'blur(8px)',
+            WebkitBackdropFilter: 'blur(8px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '16px'
+          }}
+          onClick={() => setAuthPromptModal(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: '100%',
+              maxWidth: '360px',
+              background: darkModeTheme
+                ? 'linear-gradient(165deg, #131824 0%, #090c12 100%)'
+                : 'linear-gradient(165deg, #ffffff 0%, #f1f5f9 100%)',
+              border: darkModeTheme ? '1px solid rgba(56, 189, 248, 0.38)' : '1px solid #cbd5e1',
+              borderRadius: '18px',
+              padding: '22px 20px',
+              boxShadow: '0 24px 60px rgba(0, 0, 0, 0.78)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '14px',
+              fontFamily: 'monospace'
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div
+                  style={{
+                    width: '34px',
+                    height: '34px',
+                    borderRadius: '10px',
+                    background: 'rgba(56, 189, 248, 0.14)',
+                    border: '1px solid rgba(56, 189, 248, 0.4)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: '#38bdf8'
+                  }}
+                >
+                  <Lock style={{ width: '16px', height: '16px' }} />
+                </div>
+                <h3
+                  style={{
+                    margin: 0,
+                    fontSize: '15px',
+                    fontWeight: 900,
+                    color: darkModeTheme ? '#f8fafc' : '#0f172a'
+                  }}
+                >
+                  {tr('Sign in to continue', userPreferences.language)}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAuthPromptModal(null)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: '#94a3b8',
+                  cursor: 'pointer',
+                  padding: '4px'
+                }}
+              >
+                <X style={{ width: '16px', height: '16px' }} />
+              </button>
+            </div>
+
+            <p
+              style={{
+                margin: 0,
+                fontSize: '12px',
+                lineHeight: 1.55,
+                color: darkModeTheme ? '#cbd5e1' : '#334155'
+              }}
+            >
+              {tr("You'll need to sign in or create an account to perform this action on CHIXUS.", userPreferences.language)}
+            </p>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '9px', marginTop: '4px' }}>
+              <button
+                type="button"
+                id="guest-auth-prompt-signin-btn"
+                onClick={() => {
+                  sound.playClick();
+                  setPendingGuestRedirect({
+                    tab: authPromptModal.targetTab,
+                    action: authPromptModal.action
+                  });
+                  setAuthPromptModal(null);
+                  setOnboardStage('login');
+                }}
+                className="tactical-brushed-silver-btn"
+                style={{
+                  width: '100%',
+                  padding: '11px 14px',
+                  borderRadius: '11px',
+                  fontSize: '12.5px',
+                  fontWeight: 900,
+                  fontFamily: 'monospace',
+                  cursor: 'pointer'
+                }}
+              >
+                {tr('Sign in', userPreferences.language)}
+              </button>
+
+              <button
+                type="button"
+                id="guest-auth-prompt-create-btn"
+                onClick={() => {
+                  sound.playClick();
+                  setPendingGuestRedirect({
+                    tab: authPromptModal.targetTab,
+                    action: authPromptModal.action
+                  });
+                  setAuthPromptModal(null);
+                  setRegStep('details');
+                  setOnboardStage('registration');
+                }}
+                style={{
+                  width: '100%',
+                  padding: '11px 14px',
+                  borderRadius: '11px',
+                  background: 'rgba(56, 189, 248, 0.14)',
+                  border: '1px solid rgba(56, 189, 248, 0.45)',
+                  color: darkModeTheme ? '#7dd3fc' : '#0369a1',
+                  fontSize: '12px',
+                  fontWeight: 800,
+                  fontFamily: 'monospace',
+                  cursor: 'pointer'
+                }}
+              >
+                {tr('Create an account', userPreferences.language)}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  sound.playClick();
+                  setAuthPromptModal(null);
+                }}
+                style={{
+                  width: '100%',
+                  padding: '8px 12px',
+                  borderRadius: '10px',
+                  background: 'transparent',
+                  border: 'none',
+                  color: '#94a3b8',
+                  fontSize: '11px',
+                  fontFamily: 'monospace',
+                  cursor: 'pointer'
+                }}
+              >
+                {tr('Cancel', userPreferences.language)}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {renderTermsAgreementModal()}
       {renderLogoutConfirmModal()}
       {renderAccountVerificationModal()}
@@ -13811,6 +14163,7 @@ export function App() {
                 }}
                 onClick={() => {
                   sound.playClick();
+                  if (!requireAuthForAction(activeTab, 'open_profile')) return;
                   setIsDossierDrawerOpen(true);
                 }}
                 title="Tap profile avatar to open Profile Drawer"
@@ -13869,13 +14222,40 @@ export function App() {
                     letterSpacing: '0.6px'
                   }}
                 >
-                  ID: {currentUserProfile?.secretId || generatedSecretID || `CHI-7649-${selectedRegion.suffix || 'NG'}`}
+                  {isGuestMode
+                    ? tr('Guest', userPreferences.language)
+                    : `ID: ${currentUserProfile?.secretId || generatedSecretID || ''}`}
                 </span>
               </div>
             </div>
 
             {/* Top-Right: Network Connectivity Indicator, Notification Bell & Menu Hamburger */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              {isGuestMode && (
+                <button
+                  type="button"
+                  id="header-guest-signin-btn"
+                  onClick={() => {
+                    sound.playClick();
+                    setPendingGuestRedirect({ tab: activeTab });
+                    setOnboardStage('login');
+                  }}
+                  style={{
+                    background: 'rgba(56, 189, 248, 0.14)',
+                    border: '1px solid rgba(56, 189, 248, 0.45)',
+                    borderRadius: '9px',
+                    padding: '5px 10px',
+                    color: darkModeTheme ? '#7dd3fc' : '#0369a1',
+                    fontSize: '11px',
+                    fontFamily: 'monospace',
+                    fontWeight: 800,
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap'
+                  }}
+                >
+                  {tr('Sign in', userPreferences.language)}
+                </button>
+              )}
               <NetworkStatusIcon />
 
               {/* Notification Hub Button with Metallic Bevel */}
@@ -13884,6 +14264,7 @@ export function App() {
                 id="header-notification-hub-btn"
                 onClick={() => {
                   sound.playClick();
+                  if (!requireAuthForAction(activeTab, 'notifications')) return;
                   const allIdsToMarkRead = [
                     ...notifications.map((n) => n.id),
                     ...incomingConnectionRequests.map((r) => r.id),
@@ -14044,7 +14425,7 @@ export function App() {
                     }}
                   >
                     {isActive && <Icon style={{ width: '13px', height: '13px', flexShrink: 0, color: darkModeTheme ? '#070a10' : '#ffffff' }} />}
-                    <span>{tab.label}</span>
+                    <span>{tr(tab.label, userPreferences.language)}</span>
                   </button>
                   {idx < arr.length - 1 && !isActive && !isAdjacentToActive && activeTab !== arr[idx + 1].id && (
                     <div style={{ width: '1px', height: '14px', background: darkModeTheme ? 'rgba(148, 163, 184, 0.2)' : '#cbd5e1', flexShrink: 0 }} />
@@ -14062,86 +14443,6 @@ export function App() {
           {/* ======================================================== */}
           {activeTab === 'feed' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              {/* Live Feed Sync Status Bar */}
-              <div
-                id="feed-live-sync-strip"
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  padding: '8px 13px',
-                  borderRadius: '14px',
-                  background: darkModeTheme
-                    ? 'linear-gradient(90deg, rgba(16, 22, 34, 0.95) 0%, rgba(10, 14, 22, 0.98) 100%)'
-                    : 'linear-gradient(90deg, #ffffff 0%, #f1f5f9 100%)',
-                  border: darkModeTheme ? '1px solid rgba(56, 189, 248, 0.24)' : '1px solid #cbd5e1',
-                  boxShadow: darkModeTheme ? '0 4px 16px rgba(0, 0, 0, 0.4)' : '0 2px 8px rgba(15, 23, 42, 0.05)'
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span
-                    className="live-blue-pulse-dot"
-                    style={{
-                      width: '8px',
-                      height: '8px',
-                      borderRadius: '50%',
-                      background: '#38bdf8',
-                      display: 'inline-block',
-                      flexShrink: 0
-                    }}
-                  />
-                  <span
-                    style={{
-                      fontSize: '10.5px',
-                      fontFamily: 'monospace',
-                      fontWeight: 800,
-                      letterSpacing: '0.6px',
-                      color: darkModeTheme ? '#e2e8f0' : '#0f172a'
-                    }}
-                  >
-                    LIVE FEED SYNC
-                  </span>
-                  <span
-                    style={{
-                      fontSize: '10px',
-                      fontFamily: 'monospace',
-                      color: '#38bdf8',
-                      padding: '1px 7px',
-                      borderRadius: '999px',
-                      background: darkModeTheme ? 'rgba(56, 189, 248, 0.12)' : '#e0f2fe',
-                      border: '1px solid rgba(56, 189, 248, 0.32)'
-                    }}
-                  >
-                    {posts.length} Active
-                  </span>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    sound.playClick();
-                    setNowTick(Date.now());
-                    triggerToast('⚡ Feed timeline synchronized.');
-                  }}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '5px',
-                    background: darkModeTheme ? 'rgba(37, 99, 235, 0.15)' : '#e0f2fe',
-                    border: '1px solid rgba(56, 189, 248, 0.4)',
-                    borderRadius: '8px',
-                    padding: '4px 10px',
-                    color: darkModeTheme ? '#7dd3fc' : '#0369a1',
-                    fontSize: '10.5px',
-                    fontFamily: 'monospace',
-                    fontWeight: 800,
-                    cursor: 'pointer'
-                  }}
-                >
-                  <RefreshCw style={{ width: '11px', height: '11px' }} />
-                  <span>Sync</span>
-                </button>
-              </div>
               {/* Creator Box */}
               <form
                 id="feed-creator-form"
@@ -14173,7 +14474,8 @@ export function App() {
                       cursor: 'pointer',
                       flexShrink: 0
                     }}
-                    onClick={() =>
+                    onClick={() => {
+                      if (!requireAuthForAction('feed', 'open_profile')) return;
                       handleOpenUserNode({
                         name: userName,
                         badge: userHeadline || '',
@@ -14184,8 +14486,8 @@ export function App() {
                         location: userLocation,
                         headline: userHeadline,
                         summary: executiveSummary
-                      })
-                    }
+                      });
+                    }}
                     title="View your Operator Profile"
                   >
                     <img
@@ -14198,9 +14500,16 @@ export function App() {
                   <textarea
                     id="feed-creator-textarea"
                     rows={3}
+                    readOnly={isGuestMode}
+                    onFocus={(e) => {
+                      if (isGuestMode) {
+                        e.currentTarget.blur();
+                        requireAuthForAction('feed', 'create_post');
+                      }
+                    }}
                     value={newPostContent}
                     onChange={(e) => setNewPostContent(e.target.value)}
-                    placeholder="Share a technical update, circuit blueprint, or verification telemetry..."
+                    placeholder={tr('Share a technical update, circuit blueprint, or verification telemetry...', userPreferences.language)}
                     className="tactical-inset-input"
                     style={{
                       flex: 1,
@@ -14250,12 +14559,18 @@ export function App() {
                 {/* Row: Publishing Info & Add Media Button */}
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <div style={{ fontSize: '11.5px', fontFamily: 'monospace', color: darkModeTheme ? '#94a3b8' : '#475569' }}>
-                    Publishing as: <span style={{ color: darkModeTheme ? '#f8fafc' : '#0f172a', fontWeight: 'bold' }}>{userName}</span>
+                    {tr('Publishing as:', userPreferences.language)}{' '}
+                    <span style={{ color: darkModeTheme ? '#f8fafc' : '#0f172a', fontWeight: 'bold' }}>
+                      {isGuestMode ? tr('Guest', userPreferences.language) : userName}
+                    </span>
                   </div>
 
                   <button
                     type="button"
-                    onClick={() => postFileInputRef.current?.click()}
+                    onClick={() => {
+                      if (!requireAuthForAction('feed', 'add_media')) return;
+                      postFileInputRef.current?.click();
+                    }}
                     className="tactical-action-btn"
                     style={{
                       display: 'flex',
@@ -14272,7 +14587,7 @@ export function App() {
                     }}
                   >
                     <Camera style={{ width: '14px', height: '14px', color: '#38bdf8' }} />
-                    <span>Add Media</span>
+                    <span>{tr('Add Media', userPreferences.language)}</span>
                   </button>
                   <input
                     ref={postFileInputRef}
@@ -14296,7 +14611,7 @@ export function App() {
                 {/* Raised Brushed-Silver Metallic Button: Share Update */}
                 <button
                   type="submit"
-                  disabled={!safeTrim(newPostContent) && !newPostImage}
+                  disabled={!isGuestMode && !safeTrim(newPostContent) && !newPostImage}
                   className="tactical-brushed-silver-btn"
                   style={{
                     width: '100%',
@@ -14309,12 +14624,12 @@ export function App() {
                     alignItems: 'center',
                     justifyContent: 'center',
                     gap: '8px',
-                    cursor: !newPostContent.trim() && !newPostImage ? 'not-allowed' : 'pointer',
-                    opacity: !newPostContent.trim() && !newPostImage ? 0.5 : 1
+                    cursor: !isGuestMode && !newPostContent.trim() && !newPostImage ? 'not-allowed' : 'pointer',
+                    opacity: !isGuestMode && !newPostContent.trim() && !newPostImage ? 0.5 : 1
                   }}
                 >
                   <Send style={{ width: '14px', height: '14px', transform: 'rotate(-25deg)', color: '#070a10' }} />
-                  <span>Share Update</span>
+                  <span>{tr('Publish Post', userPreferences.language)}</span>
                 </button>
               </form>
 
@@ -14476,7 +14791,7 @@ export function App() {
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
                           <span style={{ fontWeight: 700, color: darkModeTheme ? '#f8fafc' : '#0f172a' }}>{displayPostAuthor}</span>
-                          <span style={{ color: darkModeTheme ? '#94a3b8' : '#64748b' }}>reposted this</span>
+                          <span style={{ color: darkModeTheme ? '#94a3b8' : '#64748b' }}>{tr('reposted this', userPreferences.language)}</span>
                         </div>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '5px', color: '#64748b', fontSize: '11px' }}>
@@ -14579,12 +14894,15 @@ export function App() {
                               cursor: 'pointer'
                             }}
                           >
-                            You
+                            {tr('You', userPreferences.language)}
                           </button>
                         ) : !isConnectedToUser(displayPostAuthor, post.authorId) ? (
                           <button
                             type="button"
-                            onClick={() => openPeerProfile(displayPostAuthor, post.authorId)}
+                            onClick={() => {
+                              if (!requireAuthForAction('feed', 'connect_peer')) return;
+                              openPeerProfile(displayPostAuthor, post.authorId);
+                            }}
                             className="tactical-emerald-capsule"
                             style={{
                               background: darkModeTheme ? 'rgba(37, 99, 235, 0.16)' : '#e0f2fe',
@@ -14598,7 +14916,7 @@ export function App() {
                               cursor: 'pointer'
                             }}
                           >
-                            + Connect
+                            {tr('+ Connect', userPreferences.language)}
                           </button>
                         ) : null}
                       </div>
@@ -14798,13 +15116,14 @@ export function App() {
                         }}
                       >
                         <MessageSquare style={{ width: '15px', height: '15px', color: expandedComments[post.id] ? '#38bdf8' : '#94a3b8' }} />
-                        <span>{post.comments.length} Comments</span>
+                        <span>{post.comments.length} {tr('Comments', userPreferences.language)}</span>
                       </button>
 
                       <button
                         type="button"
                         onClick={() => {
                           sound.playClick();
+                          if (!requireAuthForAction('feed', 'share_post')) return;
                           setShareTargetPost(post);
                           setIsShareDrawerOpen(true);
                         }}
@@ -14989,20 +15308,20 @@ export function App() {
                       {/* Comments Thread Header */}
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid rgba(148, 163, 184, 0.1)', paddingBottom: '6px' }}>
                         <span style={{ fontSize: '10px', color: '#94a3b8', fontWeight: 'bold', letterSpacing: '0.5px' }}>
-                          REPLIES & DISCUSSION ({post.comments.length})
+                          {tr('REPLIES & DISCUSSION', userPreferences.language)} ({post.comments.length})
                         </span>
                         <button
                           type="button"
                           onClick={() => setExpandedComments((prev) => ({ ...prev, [post.id]: false }))}
                           style={{ background: 'none', border: 'none', color: '#64748b', cursor: 'pointer', fontSize: '10px' }}
                         >
-                          ✕ Close
+                          ✕ {tr('Close', userPreferences.language)}
                         </button>
                       </div>
 
                       {post.comments.length === 0 ? (
                         <div style={{ fontSize: '10.5px', color: '#64748b', fontStyle: 'italic', padding: '4px 0' }}>
-                          No replies yet. Be the first to reply below.
+                          {tr('No replies yet. Be the first to reply below.', userPreferences.language)}
                         </div>
                       ) : (
                         post.comments.map((comm, cIdx) => {
@@ -15087,15 +15406,23 @@ export function App() {
                         <input
                           type="text"
                           id={`post-reply-input-${post.id}`}
-                          autoFocus
+                          autoFocus={!isGuestMode}
+                          readOnly={isGuestMode}
+                          onFocus={(e) => {
+                            if (isGuestMode) {
+                              e.currentTarget.blur();
+                              requireAuthForAction('feed', 'reply_post');
+                            }
+                          }}
                           value={commentInputs[post.id] || ''}
                           onChange={(e) => setCommentInputs((prev) => ({ ...prev, [post.id]: e.target.value }))}
                           onKeyDown={(e) => {
                             if (e.key === 'Enter') {
+                              if (!requireAuthForAction('feed', 'reply_post')) return;
                               handleAddComment(post.id, commentInputs[post.id] || '');
                             }
                           }}
-                          placeholder="Type your reply..."
+                          placeholder={tr('Type your reply...', userPreferences.language)}
                           style={{
                             flex: 1,
                             padding: '7px 10px',
@@ -15110,7 +15437,10 @@ export function App() {
                         />
                         <button
                           type="button"
-                          onClick={() => handleAddComment(post.id, commentInputs[post.id] || '')}
+                          onClick={() => {
+                            if (!requireAuthForAction('feed', 'reply_post')) return;
+                            handleAddComment(post.id, commentInputs[post.id] || '');
+                          }}
                           style={{
                             padding: '7px 14px',
                             borderRadius: '6px',
@@ -15123,7 +15453,7 @@ export function App() {
                             cursor: 'pointer'
                           }}
                         >
-                          Reply
+                          {tr('Reply', userPreferences.language)}
                         </button>
                       </div>
                     </div>
@@ -15885,7 +16215,7 @@ export function App() {
                           }}
                         >
                           <Camera style={{ width: '14px', height: '14px' }} />
-                          <span>Open Rear Camera</span>
+                          <span>{tr('Open Rear Camera', userPreferences.language)}</span>
                         </button>
                       ) : (
                         <button
@@ -15907,7 +16237,7 @@ export function App() {
                             cursor: 'pointer'
                           }}
                         >
-                          <span>Stop Rear Camera</span>
+                          <span>{tr('Stop Rear Camera', userPreferences.language)}</span>
                         </button>
                       )}
 
@@ -15933,7 +16263,7 @@ export function App() {
                           }}
                         >
                           <Radio style={{ width: '14px', height: '14px' }} />
-                          <span>🔴 Start WS Stream</span>
+                          <span>🔴 {tr('Start WS Stream', userPreferences.language)}</span>
                         </button>
                       ) : (
                         <button
@@ -15982,12 +16312,15 @@ export function App() {
                         }}
                       >
                         <Camera style={{ width: '14px', height: '14px' }} />
-                        <span>{isScanning ? 'Inspecting...' : '📸 Snap & Inspect'}</span>
+                        <span>{isScanning ? tr('Inspecting...', userPreferences.language) : `📸 ${tr('Snap & Inspect', userPreferences.language)}`}</span>
                       </button>
 
                       <button
                         type="button"
-                        onClick={() => setSafetyModalOpen(true)}
+                        onClick={() => {
+                          if (!requireAuthForAction('inspect', 'zero_energy')) return;
+                          setSafetyModalOpen(true);
+                        }}
                         style={{
                           display: 'flex',
                           alignItems: 'center',
@@ -16005,7 +16338,7 @@ export function App() {
                         }}
                       >
                         <Shield style={{ width: '14px', height: '14px', color: '#10b981' }} />
-                        <span>Zero Energy</span>
+                        <span>{tr('Zero Energy', userPreferences.language)}</span>
                       </button>
                     </div>
                   ) : (
@@ -16029,7 +16362,7 @@ export function App() {
                           }}
                         >
                           <Camera style={{ width: '14px', height: '14px' }} />
-                          <span>Open Rear Camera</span>
+                          <span>{tr('Open Rear Camera', userPreferences.language)}</span>
                         </button>
                       ) : !isSpatialScanning ? (
                         <>
@@ -16051,7 +16384,7 @@ export function App() {
                             }}
                           >
                             <Play style={{ width: '14px', height: '14px' }} />
-                            <span>▶️ Start Camera Movement</span>
+                            <span>▶️ {tr('Start Camera Movement', userPreferences.language)}</span>
                           </button>
                           <button
                             type="button"
@@ -16068,7 +16401,7 @@ export function App() {
                               cursor: 'pointer'
                             }}
                           >
-                            Stop Camera
+                            {tr('Stop Camera', userPreferences.language)}
                           </button>
                         </>
                       ) : (
@@ -16096,7 +16429,7 @@ export function App() {
                           }}
                         >
                           <CheckCircle2 style={{ width: '18px', height: '18px', color: '#ffffff' }} />
-                          <span>✅ Done Moving Camera (Stop &amp; Review)</span>
+                          <span>✅ {tr('Done Moving Camera (Stop & Review)', userPreferences.language)}</span>
                         </button>
                       )}
                     </div>
@@ -16115,7 +16448,7 @@ export function App() {
                     }}
                   >
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '9.5px', fontFamily: 'monospace', color: '#94a3b8' }}>
-                      <span>Additional Equipment Information (Optional)</span>
+                      <span>{tr('Additional Equipment Information (Optional)', userPreferences.language)}</span>
                     </div>
                     <input
                       type="text"
@@ -16278,7 +16611,7 @@ export function App() {
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                           <span style={{ fontSize: '16px' }}>⚡</span>
-                          <span>RUN SCAN</span>
+                          <span>{tr('RUN SCAN', userPreferences.language)}</span>
                         </div>
                         <span style={{ fontSize: '9px', fontWeight: 700, opacity: 0.85 }}>
                           Execute AI Vision Core &amp; Full Circuit Diagnostic
@@ -16303,7 +16636,7 @@ export function App() {
                           cursor: 'pointer'
                         }}
                       >
-                        🔄 Retake / Move Camera Again
+                        🔄 {tr('Retake / Move Camera Again', userPreferences.language)}
                       </button>
                     </div>
                   </div>
@@ -17080,14 +17413,14 @@ export function App() {
                     boxSizing: 'border-box'
                   }}
                 >
-                  <div style={{ fontSize: '9px', color: '#94a3b8', letterSpacing: '0.4px' }}>TOTAL SCANS / INSPECTIONS</div>
+                  <div style={{ fontSize: '9px', color: '#94a3b8', letterSpacing: '0.4px' }}>{tr('TOTAL SCANS / INSPECTIONS', userPreferences.language)}</div>
                   <div style={{ fontSize: '18px', fontWeight: 900, color: '#38bdf8', marginTop: '4px' }}>
-                    {formatNumber(Math.max(userInspectionsConducted, scanLogs.length))}
+                    {formatNumber(isGuestMode ? 0 : Math.max(userInspectionsConducted, scanLogs.length))}
                   </div>
                   <div style={{ fontSize: '8.5px', color: '#34d399', marginTop: '2px', fontWeight: 'bold' }}>
-                    {Math.max(userInspectionsConducted, scanLogs.length) > 0
+                    {!isGuestMode && Math.max(userInspectionsConducted, scanLogs.length) > 0
                       ? `${formatNumber(Math.max(userInspectionsConducted, scanLogs.length))} Total Scan${Math.max(userInspectionsConducted, scanLogs.length) === 1 ? '' : 's'}`
-                      : 'Awaiting Scan'}
+                      : tr('Awaiting Scan', userPreferences.language)}
                   </div>
                 </div>
 
@@ -17101,9 +17434,9 @@ export function App() {
                     boxSizing: 'border-box'
                   }}
                 >
-                  <div style={{ fontSize: '9px', color: '#94a3b8', letterSpacing: '0.4px' }}>VERIFIED ACCURACY</div>
+                  <div style={{ fontSize: '9px', color: '#94a3b8', letterSpacing: '0.4px' }}>{tr('VERIFIED ACCURACY', userPreferences.language)}</div>
                   <div style={{ fontSize: '18px', fontWeight: 900, color: '#34d399', marginTop: '4px' }}>
-                    {userAiScanAccuracy}
+                    {isGuestMode ? '0.0%' : userAiScanAccuracy}
                   </div>
                   <div style={{ fontSize: '8.5px', color: '#38bdf8', marginTop: '2px', fontWeight: 'bold' }}>
                     INT8 Neural Model
@@ -17120,12 +17453,12 @@ export function App() {
                     boxSizing: 'border-box'
                   }}
                 >
-                  <div style={{ fontSize: '9px', color: '#94a3b8', letterSpacing: '0.4px' }}>SOLDER YIELD RATE</div>
+                  <div style={{ fontSize: '9px', color: '#94a3b8', letterSpacing: '0.4px' }}>{tr('SOLDER YIELD RATE', userPreferences.language)}</div>
                   <div style={{ fontSize: '18px', fontWeight: 900, color: '#a78bfa', marginTop: '4px' }}>
-                    {userInspectionsConducted > 0 ? '98.6%' : '0.0%'}
+                    {isGuestMode ? '0.0%' : userInspectionsConducted > 0 ? '98.6%' : '0.0%'}
                   </div>
                   <div style={{ fontSize: '8.5px', color: '#94a3b8', marginTop: '2px' }}>
-                    {userFaultsIsolated} Faults Isolated
+                    {isGuestMode ? 0 : userFaultsIsolated} {tr('Faults Isolated', userPreferences.language)}
                   </div>
                 </div>
               </div>
@@ -17147,10 +17480,10 @@ export function App() {
               >
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                   <span style={{ fontSize: '10.5px', fontWeight: 900, fontFamily: 'monospace', color: darkModeTheme ? '#ffffff' : '#0f172a' }}>
-                    📄 EXPORT FRAUD-PROOF LEDGER
+                    📄 {tr('EXPORT FRAUD-PROOF LEDGER', userPreferences.language)}
                   </span>
                   <span style={{ fontSize: '9px', fontFamily: 'monospace', color: '#94a3b8' }}>
-                    Download scan log history ({scanLogs.length} records) for external documentation
+                    Download scan log history ({isGuestMode ? 0 : scanLogs.length} records) for external documentation
                   </span>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -17174,7 +17507,7 @@ export function App() {
                     }}
                   >
                     <Download style={{ width: '12px', height: '12px' }} />
-                    <span>Export CSV</span>
+                    <span>{tr('Export CSV', userPreferences.language)}</span>
                   </button>
                   <button
                     type="button"
@@ -17196,7 +17529,7 @@ export function App() {
                     }}
                   >
                     <FileText style={{ width: '12px', height: '12px' }} />
-                    <span>Export PDF</span>
+                    <span>{tr('Export PDF', userPreferences.language)}</span>
                   </button>
                 </div>
               </div>
@@ -17242,7 +17575,7 @@ export function App() {
                   }}
                 >
                   <Camera style={{ width: '13px', height: '13px' }} />
-                  <span>OPTICAL PICTURE FEED</span>
+                  <span>{tr('OPTICAL PICTURE FEED', userPreferences.language)}</span>
                 </button>
 
                 <button
@@ -17271,7 +17604,7 @@ export function App() {
                   }}
                 >
                   <Activity style={{ width: '13px', height: '13px' }} />
-                  <span>TELEMETRY & LOGS</span>
+                  <span>{tr('TELEMETRY LEDGER', userPreferences.language)}</span>
                 </button>
               </div>
 
@@ -17312,7 +17645,7 @@ export function App() {
                         fontWeight: 'bold'
                       }}
                     >
-                      {scanLogs.length} HARDWARE CAPTURES
+                      {isGuestMode ? 0 : scanLogs.length} HARDWARE CAPTURES
                     </span>
                   </div>
 
@@ -17320,7 +17653,7 @@ export function App() {
                     Live optical photo feed of captured circuit boards, high-density SMT micro-joints, and edge diagnostics.
                   </p>
 
-                  {scanLogs.length > 0 ? (
+                  {!isGuestMode && scanLogs.length > 0 ? (
                     <div
                       id="optical-picture-thumbnail-grid"
                       style={{
@@ -17508,7 +17841,7 @@ export function App() {
                   </div>
 
                   {/* Strict Tabular Ledger */}
-                  {scanLogs.length > 0 ? (
+                  {!isGuestMode && scanLogs.length > 0 ? (
                     <div
                       style={{
                         width: '100%',
@@ -17766,7 +18099,7 @@ export function App() {
                           Operator Messages &amp; Qorvex Bot
                         </div>
                         <div style={{ fontSize: '10px', color: '#38bdf8', fontFamily: 'monospace', marginTop: '2px' }}>
-                          {contacts.length} Active Channels • Ask Qorvex anything about CHIXUS
+                          {(isGuestMode ? [defaultChixusBotContact] : contacts).length} Active Channels • Ask Qorvex anything about CHIXUS
                         </div>
                       </div>
                       <button
@@ -17851,7 +18184,7 @@ export function App() {
 
                   {/* Straight Vertical Stack of Messages / Conversations */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    {contacts.length === 0 ? (
+                    {(isGuestMode ? [defaultChixusBotContact] : contacts).length === 0 ? (
                       <div
                         id="messages-empty-state-canvas"
                         style={{
@@ -17882,7 +18215,7 @@ export function App() {
                           <MessageSquare style={{ width: '22px', height: '22px', color: '#38bdf8' }} />
                         </div>
                         <div style={{ fontSize: '14px', fontWeight: 900, fontFamily: 'monospace', color: '#ffffff' }}>
-                          NO ACTIVE PEER CHANNELS
+                          {tr('NO ACTIVE PEER CHANNELS', userPreferences.language)}
                         </div>
                         <div style={{ fontSize: '11px', color: '#94a3b8', fontFamily: 'monospace', maxWidth: '320px', lineHeight: 1.5 }}>
                           Your messaging inbox is a pristine blank canvas awaiting new peer connections. Search an operator in the feed or connect to nodes in the mesh.
@@ -17910,11 +18243,12 @@ export function App() {
                         </button>
                       </div>
                     ) : (
-                      deduplicateContactsList(contacts)
+                      (isGuestMode ? [defaultChixusBotContact] : deduplicateContactsList(contacts))
                         .slice()
                         .sort((a, b) => {
-                          const timeA = getContactLatestMessageTimestamp(a.id, chatMessages);
-                          const timeB = getContactLatestMessageTimestamp(b.id, chatMessages);
+                          const list = isGuestMode ? guestQorvexMessages : chatMessages;
+                          const timeA = getContactLatestMessageTimestamp(a.id, list);
+                          const timeB = getContactLatestMessageTimestamp(b.id, list);
                           if (timeB !== timeA) return timeB - timeA;
                           return 0;
                         })
@@ -17923,13 +18257,14 @@ export function App() {
                         const q = safeTrim(messageSearchQuery).toLowerCase();
                         const matchName = c.name.toLowerCase().includes(q);
                         const matchRole = c.role.toLowerCase().includes(q);
-                        const matchMsg = chatMessages.some(
+                        const list = isGuestMode ? guestQorvexMessages : chatMessages;
+                        const matchMsg = list.some(
                           (m) => m.contactId === c.id && m.text.toLowerCase().includes(q)
                         );
                         return matchName || matchRole || matchMsg;
                       })
                       .map((c) => {
-                        const contactMsgs = chatMessages.filter((m) => m.contactId === c.id);
+                        const contactMsgs = (isGuestMode ? guestQorvexMessages : chatMessages).filter((m) => m.contactId === c.id);
                         const lastMsg = contactMsgs[contactMsgs.length - 1];
                         const isHoldingThisContact = holdingContactId === c.id;
                         return (
@@ -18164,7 +18499,8 @@ export function App() {
                 >
                   {/* Chat Top Nav Bar + Live Qorvex Cover Banner */}
                   {(() => {
-                    const currentContact = contacts.find((c) => c.id === activeContactId) || contacts[0];
+                    const visibleChatContacts = isGuestMode ? [defaultChixusBotContact] : contacts;
+                    const currentContact = visibleChatContacts.find((c) => c.id === activeContactId) || visibleChatContacts[0];
                     if (!currentContact) return null;
                     const isQorvexChannel =
                       currentContact.id === CHIXUS_AI_BOT_ID ||
@@ -18206,7 +18542,7 @@ export function App() {
                               title="Back to all message channels"
                             >
                               <ArrowLeft style={{ width: '13px', height: '13px' }} />
-                              <span>Messages</span>
+                              <span>{tr('Messages', userPreferences.language)}</span>
                             </button>
 
                             <div
@@ -18461,7 +18797,8 @@ export function App() {
                       }}
                     >
                     {(() => {
-                      const activePeer = contacts.find((c) => c.id === activeContactId) || contacts[0];
+                      const visibleChatContacts = isGuestMode ? [defaultChixusBotContact] : contacts;
+                      const activePeer = visibleChatContacts.find((c) => c.id === activeContactId) || visibleChatContacts[0];
                       const isAi = activePeer?.id === CHIXUS_AI_BOT_ID || activePeer?.name === 'Qorvex' || activePeer?.name === 'Qordex' || activePeer?.name === 'CHIXUS AI';
                       const isPeerOnline = isAi || activePeer?.status?.toLowerCase() === 'online';
                       const peerAvatar = isAi
@@ -18916,7 +19253,7 @@ export function App() {
                                   )}
                                   {isMe && (
                                     (() => {
-                                      const currentPeer = contacts.find((c) => c.id === activeContactId);
+                                      const currentPeer = (isGuestMode ? [defaultChixusBotContact] : contacts).find((c) => c.id === activeContactId);
                                       const isTargetOnline =
                                         activeContactId === CHIXUS_AI_BOT_ID ||
                                         currentPeer?.name === 'Qorvex' ||
@@ -18924,13 +19261,9 @@ export function App() {
                                         currentPeer?.name === 'CHIXUS AI' ||
                                         isUserTrulyOnline(currentPeer);
 
-                                      // If recipient is offline, force single gray checkmark (sent).
-                                      // It must NEVER show double checkmarks or green when offline!
-                                      const status = !isTargetOnline
-                                        ? 'sent'
-                                        : (msg.deliveryStatus || 'delivered');
+                                      const status = msg.deliveryStatus || (isTargetOnline ? 'delivered' : 'sent');
 
-                                      if (status === 'read' && isTargetOnline) {
+                                      if (status === 'read') {
                                         return (
                                           <span
                                             title="Seen / Read by recipient (Green ✓✓)"
@@ -18940,7 +19273,7 @@ export function App() {
                                           </span>
                                         );
                                       }
-                                      if (status === 'delivered' && isTargetOnline) {
+                                      if (status === 'delivered' || isTargetOnline) {
                                         return (
                                           <span
                                             title="Delivered (Recipient Online — Gray ✓✓)"
@@ -19584,36 +19917,6 @@ export function App() {
                       <Ban style={{ width: '15px', height: '15px' }} />
                       <span>{contextMenuContact.isBlocked ? 'Unblock' : 'Block'}</span>
                     </button>
-
-                    {/* 4. Live Presence Toggle (Test Online / Offline) */}
-                    {contextMenuContact.id !== CHIXUS_AI_BOT_ID && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const target = contextMenuContact;
-                          setContextMenuContact(null);
-                          handleToggleContactOnlineStatus(target.id, target.name);
-                        }}
-                        style={{
-                          width: '100%',
-                          padding: '11px 12px',
-                          borderRadius: '10px',
-                          background: isUserTrulyOnline(contextMenuContact) ? 'rgba(239, 68, 68, 0.14)' : 'rgba(34, 197, 94, 0.14)',
-                          border: isUserTrulyOnline(contextMenuContact) ? '1px solid rgba(239, 68, 68, 0.35)' : '1px solid rgba(34, 197, 94, 0.35)',
-                          color: isUserTrulyOnline(contextMenuContact) ? '#fca5a5' : '#4ade80',
-                          fontSize: '12px',
-                          fontFamily: 'monospace',
-                          fontWeight: 'bold',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '10px',
-                          cursor: 'pointer'
-                        }}
-                      >
-                        <Radio style={{ width: '15px', height: '15px' }} />
-                        <span>{isUserTrulyOnline(contextMenuContact) ? 'Set Offline (Test Single ✓)' : 'Set Online (Test Double ✓✓)'}</span>
-                      </button>
-                    )}
                   </div>
                 </div>
               )}
@@ -19963,10 +20266,10 @@ export function App() {
                           letterSpacing: '0.5px'
                         }}
                       >
-                        NETWORK DIRECTORY
+                        {tr('NETWORK DIRECTORY', userPreferences.language)}
                       </h2>
                       <p style={{ margin: '2px 0 0', fontSize: '11px', color: '#94a3b8', fontFamily: 'monospace' }}>
-                        Lookup verified hardware node operators by verified Node ID
+                        {tr('Lookup verified hardware node operators by verified Node ID', userPreferences.language)}
                       </p>
                     </div>
                   </div>
@@ -19988,7 +20291,7 @@ export function App() {
                     }}
                   >
                     <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#10b981', display: 'inline-block' }} />
-                    VERIFIED HYBRID NETWORK
+                    {tr('VERIFIED HYBRID NETWORK', userPreferences.language)}
                   </div>
                 </div>
 
@@ -20002,12 +20305,23 @@ export function App() {
                     <input
                       type="text"
                       id="search-tab-node-input"
+                      readOnly={isGuestMode}
+                      onFocus={(e) => {
+                        if (isGuestMode) {
+                          e.currentTarget.blur();
+                          requireAuthForAction('search', 'search_user');
+                        }
+                      }}
+                      onClick={() => {
+                        if (isGuestMode) requireAuthForAction('search', 'search_user');
+                      }}
                       value={nodeSearchInput}
                       onChange={(e: any) => {
+                        if (isGuestMode) return;
                         setNodeSearchInput(e.target.value);
                         if (nodeSearchError) setNodeSearchError(null);
                       }}
-                      placeholder="Query verified operators by CHIXUS ID, phone number, or email..."
+                      placeholder={tr('Query verified operators by CHIXUS ID, phone number, or email...', userPreferences.language)}
                       style={{
                         width: '100%',
                         padding: '11px 12px 11px 36px',
@@ -20052,7 +20366,7 @@ export function App() {
                     ) : (
                       <Link2 style={{ width: '14px', height: '14px' }} />
                     )}
-                    <span>{nodeSearchLoading ? 'Scanning...' : 'Link Node'}</span>
+                    <span>{nodeSearchLoading ? tr('Scanning...', userPreferences.language) : tr('Link Node', userPreferences.language)}</span>
                   </button>
                 </form>
 
@@ -21000,10 +21314,10 @@ export function App() {
                   onClick={() => {
                     sound.playClick();
                     const next = !darkModeTheme;
-                    setDarkModeTheme(next);
-                    try {
-                      localStorage.setItem('chixus_dark_mode_v7', JSON.stringify(next));
-                    } catch {}
+                    applyPreferencesLocally({ ...userPreferencesRef.current, theme: next ? 'dark' : 'white' });
+                    if (getAuthToken() && !isGuestMode) {
+                      void saveUserPreferences({ ...userPreferencesRef.current, theme: next ? 'dark' : 'white' }).catch(() => {});
+                    }
                   }}
                   style={{
                     padding: '6px 14px',
@@ -21401,7 +21715,7 @@ export function App() {
                         <Terminal style={{ width: '11px', height: '11px', color: '#38bdf8' }} />
                         <span>ID:</span>
                         <span style={{ color: '#ffffff', fontWeight: 900, letterSpacing: '0.5px' }}>
-                          {currentUserProfile?.secretId || generatedSecretID || `CHI-1342-${selectedRegion.suffix}`}
+                          {currentUserProfile?.secretId || generatedSecretID || ''}
                         </span>
                       </div>
                       {currentUserProfile?.starTier ? (
@@ -22106,34 +22420,65 @@ export function App() {
                 </button>
               </div>
 
-              {/* Bottom Logout Action */}
+              {/* Bottom Logout / Sign-in Action */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: 'auto' }}>
-                <button
-                  type="button"
-                  id="admin-drawer-logout-btn"
-                  onClick={() => {
-                    sound.playClick();
-                    setShowLogoutConfirmModal(true);
-                  }}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '10px',
-                    padding: '10px 12px',
-                    borderRadius: '8px',
-                    background: 'rgba(239, 68, 68, 0.12)',
-                    border: '1px solid rgba(239, 68, 68, 0.35)',
-                    color: '#fca5a5',
-                    fontSize: '12px',
-                    fontFamily: 'monospace',
-                    fontWeight: 'bold',
-                    cursor: 'pointer',
-                    textAlign: 'left'
-                  }}
-                >
-                  <LogOut style={{ width: '16px', height: '16px', color: '#f87171' }} />
-                  <span>Lock Node / Logout</span>
-                </button>
+                {isGuestMode ? (
+                  <button
+                    type="button"
+                    id="admin-drawer-guest-signin-btn"
+                    onClick={() => {
+                      sound.playClick();
+                      setPendingGuestRedirect({ tab: activeTab });
+                      setIsNetworkAdminDrawerOpen(false);
+                      setOnboardStage('login');
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '10px',
+                      padding: '10px 12px',
+                      borderRadius: '8px',
+                      background: 'rgba(56, 189, 248, 0.14)',
+                      border: '1px solid rgba(56, 189, 248, 0.45)',
+                      color: '#7dd3fc',
+                      fontSize: '12px',
+                      fontFamily: 'monospace',
+                      fontWeight: 'bold',
+                      cursor: 'pointer',
+                      textAlign: 'left'
+                    }}
+                  >
+                    <LogOut style={{ width: '16px', height: '16px', color: '#38bdf8' }} />
+                    <span>{tr('Sign in', userPreferences.language)} / {tr('Exit Guest', userPreferences.language)}</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    id="admin-drawer-logout-btn"
+                    onClick={() => {
+                      sound.playClick();
+                      setShowLogoutConfirmModal(true);
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '10px',
+                      padding: '10px 12px',
+                      borderRadius: '8px',
+                      background: 'rgba(239, 68, 68, 0.12)',
+                      border: '1px solid rgba(239, 68, 68, 0.35)',
+                      color: '#fca5a5',
+                      fontSize: '12px',
+                      fontFamily: 'monospace',
+                      fontWeight: 'bold',
+                      cursor: 'pointer',
+                      textAlign: 'left'
+                    }}
+                  >
+                    <LogOut style={{ width: '16px', height: '16px', color: '#f87171' }} />
+                    <span>{tr('Lock Node / Log Out', userPreferences.language)}</span>
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -23448,10 +23793,10 @@ export function App() {
                     onClick={() => {
                       sound.playClick();
                       const next = !darkModeTheme;
-                      setDarkModeTheme(next);
-                      try {
-                        localStorage.setItem('chixus_dark_mode_v7', JSON.stringify(next));
-                      } catch {}
+                      applyPreferencesLocally({ ...userPreferencesRef.current, theme: next ? 'dark' : 'white' });
+                      if (getAuthToken() && !isGuestMode) {
+                        void saveUserPreferences({ ...userPreferencesRef.current, theme: next ? 'dark' : 'white' }).catch(() => {});
+                      }
                     }}
                     style={{
                       padding: '6px 12px',
@@ -25996,7 +26341,7 @@ export function App() {
 
                   <div style={{ textAlign: 'center', fontSize: '10px', color: '#38bdf8', fontFamily: 'monospace', padding: '6px' }}>
                     <RefreshCw style={{ width: '12px', height: '12px', animation: 'spin 1s linear infinite', display: 'inline-block', verticalAlign: 'middle', marginRight: '6px' }} />
-                    Synchronizing Peer Telemetry Node...
+                    {tr('Loading.....', userPreferences.language)}
                   </div>
                 </div>
               ) : (
@@ -27700,10 +28045,14 @@ export function App() {
           onToggleTheme={(targetMode?: boolean) => {
             sound.playClick();
             const nextMode = targetMode !== undefined ? targetMode : !darkModeTheme;
-            setDarkModeTheme(nextMode);
-            try {
-              localStorage.setItem('chixus_dark_mode_v7', JSON.stringify(nextMode));
-            } catch {}
+            const nextPrefs: UserPreferencesPayload = {
+              ...userPreferencesRef.current,
+              theme: nextMode ? 'dark' : 'white'
+            };
+            applyPreferencesLocally(nextPrefs);
+            if (getAuthToken() && !isGuestMode) {
+              void saveUserPreferences(nextPrefs).catch(() => {});
+            }
           }}
           userName={userName}
           userHeadline={userHeadline}
@@ -27718,7 +28067,7 @@ export function App() {
           userCountry={selectedRegion?.country || 'Nigeria'}
           preferences={userPreferences}
           isLoadingPreferences={isLoadingPreferences}
-          preferencesSyncError={preferencesSyncError}
+          preferencesSyncError={null}
           onLoadPreferences={loadAccountAndPreferencesFromBackend}
           onUpdatePreferencePatch={handleUpdatePreferencePatch}
           onRefreshAccount={loadAccountAndPreferencesFromBackend}
@@ -27836,6 +28185,7 @@ export function App() {
             id="floating-quick-post-btn"
             onClick={() => {
               sound.playClick();
+              if (!requireAuthForAction('feed', 'create_post')) return;
               const creatorEl = document.getElementById('feed-creator-form') || document.getElementById('feed-creator-textarea');
               if (creatorEl) {
                 creatorEl.scrollIntoView({ behavior: 'smooth', block: 'center' });

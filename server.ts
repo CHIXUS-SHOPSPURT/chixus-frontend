@@ -1346,30 +1346,6 @@ Provide:
     country: 'Nigeria',
     avatar: ''
   });
-  backendUsers.set('CHI-1342-NG', {
-    id: 'CHI-1342-NG',
-    username: 'CHI-1342-NG',
-    full_name: 'David Okafor',
-    location: 'Abuja, Nigeria',
-    phone: '+234 802 111 1342',
-    email: 'david.okafor@chixus.network',
-    password_hash: '1234',
-    headline: 'Senior High-Voltage PCB Inspector',
-    country: 'Nigeria',
-    avatar: ''
-  });
-  backendUsers.set('CHI-2048-NG', {
-    id: 'CHI-2048-NG',
-    username: 'CHI-2048-NG',
-    full_name: 'Amina Bello',
-    location: 'Kaduna, Nigeria',
-    phone: '+234 809 222 2048',
-    email: 'amina.bello@chixus.network',
-    password_hash: '1234',
-    headline: 'Micro-Joint Failure Analyst',
-    country: 'Nigeria',
-    avatar: ''
-  });
   backendUsers.set('CHI-8492-NG', {
     id: 'CHI-8492-NG',
     username: 'CHI-8492-NG',
@@ -1890,6 +1866,135 @@ Provide:
       });
     } catch {
       return res.json({ status: 'success', onlineOperators: [], onlineNames: [] });
+    }
+  });
+
+  // ========================================================
+  // REAL-TIME WHATSAPP-STYLE MESSAGE DELIVERY & READ RECEIPTS
+  // ========================================================
+  interface MessageReceiptRecord {
+    messageId: string;
+    senderId: string;
+    recipientId: string;
+    status: 'sent' | 'delivered' | 'read';
+    sentAt: number;
+    deliveredAt?: number;
+    readAt?: number;
+  }
+  const messageReceipts = new Map<string, MessageReceiptRecord>();
+
+  const isOperatorCurrentlyOnline = (rawId: string): boolean => {
+    const clean = String(rawId || '').trim().toUpperCase();
+    if (!clean) return false;
+    const rec = presenceRecords.get(clean);
+    if (!rec) return false;
+    return rec.visibility !== 'stealth_offline' && Date.now() - rec.lastSeen <= 45000;
+  };
+
+  app.post('/api/messages/send', (req: Request, res: Response) => {
+    try {
+      const { messageId, senderId, recipientId } = req.body || {};
+      const msgId = String(messageId || '').trim();
+      const sId = String(senderId || '').trim().toUpperCase();
+      const rId = String(recipientId || '').trim().toUpperCase();
+      if (!msgId || !sId || !rId) {
+        return res.status(400).json({ status: 'error', error: 'messageId, senderId, and recipientId are required.' });
+      }
+      const now = Date.now();
+      const recipientOnline = isOperatorCurrentlyOnline(rId);
+      const initialStatus: 'sent' | 'delivered' = recipientOnline ? 'delivered' : 'sent';
+      const rec: MessageReceiptRecord = {
+        messageId: msgId,
+        senderId: sId,
+        recipientId: rId,
+        status: initialStatus,
+        sentAt: now,
+        deliveredAt: recipientOnline ? now : undefined
+      };
+      messageReceipts.set(msgId, rec);
+      return res.json({ status: 'ok', messageId: msgId, deliveryStatus: initialStatus, receipt: rec });
+    } catch {
+      return res.json({ status: 'ok', deliveryStatus: 'sent' });
+    }
+  });
+
+  app.post('/api/messages/mark-read', (req: Request, res: Response) => {
+    try {
+      const { readerId, peerId, messageIds, readReceiptsEnabled = true } = req.body || {};
+      const rId = String(readerId || '').trim().toUpperCase();
+      const pId = String(peerId || '').trim().toUpperCase();
+      const explicitIds = Array.isArray(messageIds) ? new Set(messageIds.map((x: any) => String(x))) : null;
+      const now = Date.now();
+      const updated: MessageReceiptRecord[] = [];
+
+      for (const [id, rec] of messageReceipts.entries()) {
+        const matchesPair =
+          rId && pId
+            ? rec.recipientId === rId && rec.senderId === pId
+            : explicitIds
+            ? explicitIds.has(id)
+            : false;
+
+        if (matchesPair && (!explicitIds || explicitIds.size === 0 || explicitIds.has(id))) {
+          if (readReceiptsEnabled !== false) {
+            rec.status = 'read';
+            rec.readAt = now;
+            if (!rec.deliveredAt) rec.deliveredAt = now;
+          } else if (rec.status === 'sent') {
+            rec.status = 'delivered';
+            rec.deliveredAt = now;
+          }
+          messageReceipts.set(id, rec);
+          updated.push(rec);
+        }
+      }
+
+      if (explicitIds && rId && pId) {
+        for (const id of explicitIds) {
+          if (!messageReceipts.has(id)) {
+            const rec: MessageReceiptRecord = {
+              messageId: id,
+              senderId: pId,
+              recipientId: rId,
+              status: readReceiptsEnabled !== false ? 'read' : 'delivered',
+              sentAt: now,
+              deliveredAt: now,
+              readAt: readReceiptsEnabled !== false ? now : undefined
+            };
+            messageReceipts.set(id, rec);
+            updated.push(rec);
+          }
+        }
+      }
+
+      return res.json({ status: 'ok', updated });
+    } catch {
+      return res.json({ status: 'ok', updated: [] });
+    }
+  });
+
+  app.get('/api/messages/receipts', (req: Request, res: Response) => {
+    try {
+      const operatorId = String(req.query.operatorId || '').trim().toUpperCase();
+      const peerId = String(req.query.peerId || '').trim().toUpperCase();
+      const now = Date.now();
+      const receipts: Record<string, 'sent' | 'delivered' | 'read'> = {};
+
+      for (const [id, rec] of messageReceipts.entries()) {
+        if (operatorId && rec.senderId !== operatorId) continue;
+        if (peerId && rec.recipientId !== peerId) continue;
+
+        if (rec.status === 'sent' && isOperatorCurrentlyOnline(rec.recipientId)) {
+          rec.status = 'delivered';
+          rec.deliveredAt = now;
+          messageReceipts.set(id, rec);
+        }
+        receipts[id] = rec.status;
+      }
+
+      return res.json({ status: 'ok', receipts });
+    } catch {
+      return res.json({ status: 'ok', receipts: {} });
     }
   });
 

@@ -1820,7 +1820,7 @@ The optical sensor analyzed the geometry, luminance, and surface spectrum of you
 
 1. Using the Search Tab (By Verified Node ID):
 • Tap the "Search" tab (the magnifying glass icon) at the bottom-right of your screen.
-• In the search box ("Query verified operators by Node ID, e.g. CHI-1342-NG..."), enter the person's CHIXUS Node ID (for example, CHI-XXXX-NG) and tap the blue "Link Node" button.
+• In the search box ("Query verified operators by Node ID, e.g. CHI-XXXX-NG..."), enter the person's CHIXUS Node ID (for example, CHI-XXXX-NG) and tap the blue "Link Node" button.
 • Their Operator Card will appear showing their photo, name, Node ID, location, headline, and their published posts.
 • Tap "Dossier" (or tap their photo/name) to view their full profile, or tap "LINK NODE" to connect with them.
 
