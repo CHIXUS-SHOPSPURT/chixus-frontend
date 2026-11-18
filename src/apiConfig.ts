@@ -128,7 +128,42 @@ export const API_ENDPOINTS = {
   ACCOUNT_CHANGE_EMAIL_CONFIRM: () => `${getBackendBaseUrl()}/api/account/change-email/confirm`,
   ACCOUNT_CHANGE_PASSWORD: () => `${getBackendBaseUrl()}/api/account/change-password`,
   POSTS: () => `${getBackendBaseUrl()}/api/posts`,
+  POST_BY_ID: (postId: string | number) => `${getBackendBaseUrl()}/api/posts/${encodeURIComponent(String(postId))}`,
+  POST_REPOST: (postId: string | number) => `${getBackendBaseUrl()}/api/posts/${encodeURIComponent(String(postId))}/repost`,
+  POST_LIKE: (postId: string | number) => `${getBackendBaseUrl()}/api/posts/${encodeURIComponent(String(postId))}/like`,
+  NOTIFICATIONS: (operatorId?: string) =>
+    operatorId
+      ? `${getBackendBaseUrl()}/api/notifications?operator_id=${encodeURIComponent(operatorId)}`
+      : `${getBackendBaseUrl()}/api/notifications`,
+  NOTIFICATIONS_MARK_READ: () => `${getBackendBaseUrl()}/api/notifications/mark-read`,
   PRESENCE_HEARTBEAT: () => `${getBackendBaseUrl()}/api/presence/heartbeat`,
   PRESENCE_ONLINE_USERS: () => `${getBackendBaseUrl()}/api/presence/online-users`
 };
+
+const INTERNAL_ERROR_PATTERN =
+  /traceback|exception|typeerror|referenceerror|syntaxerror|econnrefused|enotfound|etimedout|sqlite|postgres|prisma|drizzle|sqlstate|stack\s*trace|undefined is not|cannot read propert|unexpected token|internal server error|http\s*50\d|127\.0\.0\.1|localhost:\d+/i;
+
+/**
+ * Ensures users only see clean, human-readable cloud disconnect reasons — never raw internal errors.
+ */
+export function sanitizeCloudFallbackReason(rawReason?: unknown, statusCode?: number): string {
+  const candidate = typeof rawReason === 'string' ? rawReason.trim() : '';
+  if (candidate && candidate.length <= 260 && !INTERNAL_ERROR_PATTERN.test(candidate)) {
+    return candidate;
+  }
+  if (statusCode === 503) {
+    return 'CHIXUS Cloud is temporarily paused for maintenance or high load. Please retry in a moment.';
+  }
+  if (statusCode === 429) {
+    return 'CHIXUS Cloud is receiving high traffic right now. Please wait a few seconds and try again.';
+  }
+  if (statusCode === 401 || statusCode === 403) {
+    return 'Your cloud session could not be verified or has expired. Please sign in again to continue.';
+  }
+  if (typeof statusCode === 'number' && statusCode >= 500) {
+    return 'CHIXUS Cloud services are temporarily unavailable. Your workspace remains safe in the cloud — please retry shortly.';
+  }
+  return 'Unable to establish a live sync link with CHIXUS Cloud. Please check your internet connection and try again.';
+}
+
 

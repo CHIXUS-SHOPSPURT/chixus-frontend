@@ -1,13 +1,26 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { tr } from '../i18n/translations';
+import { sanitizeCloudFallbackReason } from '../apiConfig';
 import { sharedNetworkConnectivityMonitor } from '../services/networkConnectivityService';
+import type { CloudSyncFailureState } from './CloudDisconnectedFallback';
+
+export type NetworkSyncResult =
+  | void
+  | boolean
+  | {
+      ok: boolean;
+      category?: CloudSyncFailureState['category'];
+      reason?: string;
+      statusCode?: number;
+    };
 
 interface ChixusLoadingSplashProps {
   logoSrc: string;
   showRedirectStatus?: boolean;
   language?: string;
   onComplete: () => void;
-  onNetworkSync?: () => Promise<void>;
+  onSyncFailed?: (failure: CloudSyncFailureState) => void;
+  onNetworkSync?: () => Promise<NetworkSyncResult>;
   minDurationMs?: number;
   maxDurationMs?: number;
 }
@@ -17,9 +30,10 @@ export const ChixusLoadingSplash: React.FC<ChixusLoadingSplashProps> = ({
   showRedirectStatus = true,
   language = 'English',
   onComplete,
+  onSyncFailed,
   onNetworkSync,
   minDurationMs = 2100,
-  maxDurationMs = 4200,
+  maxDurationMs = 5200,
 }) => {
   const [progress, setProgress] = useState(0);
   const [syncPhaseLabel, setSyncPhaseLabel] = useState('Connecting');
@@ -30,6 +44,9 @@ export const ChixusLoadingSplash: React.FC<ChixusLoadingSplashProps> = ({
 
   const onCompleteRef = useRef(onComplete);
   onCompleteRef.current = onComplete;
+
+  const onSyncFailedRef = useRef(onSyncFailed);
+  onSyncFailedRef.current = onSyncFailed;
 
   const onNetworkSyncRef = useRef(onNetworkSync);
   onNetworkSyncRef.current = onNetworkSync;
@@ -46,12 +63,13 @@ export const ChixusLoadingSplash: React.FC<ChixusLoadingSplashProps> = ({
     let maxGuardTimer: ReturnType<typeof setTimeout> | null = null;
 
     const startTime = performance.now();
-    let targetCeiling = 28;
+    let targetCeiling = 24;
     let displayProgress = 0;
     let syncFinished = false;
+    let syncOutcome: CloudSyncFailureState | null = null;
     let finalized = false;
 
-    const triggerCompletion = () => {
+    const triggerSuccess = () => {
       if (cancelled || finalized) return;
       finalized = true;
       displayProgress = 100;
@@ -67,71 +85,186 @@ export const ChixusLoadingSplash: React.FC<ChixusLoadingSplashProps> = ({
             onCompleteRef.current();
           }
         }, 280);
-      }, 340);
+      }, 320);
     };
 
-    const runMultiPassNetworkSync = async () => {
+    const triggerFailure = (failure: CloudSyncFailureState) => {
+      if (cancelled || finalized) return;
+      finalized = true;
+      setSyncPhaseLabel('Disconnected');
+      setIsFadingOut(true);
+      fadeTimer = setTimeout(() => {
+        if (!cancelled) {
+          if (onSyncFailedRef.current) {
+            onSyncFailedRef.current(failure);
+          } else {
+            onCompleteRef.current();
+          }
+        }
+      }, 220);
+    };
+
+    const runCloudSyncCheck = async () => {
       try {
-        // Pass 1: Initial live connectivity & latency probe
+        if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+          syncOutcome = {
+            category: 'no_internet',
+            reason:
+              'No active internet connection detected. Turn on Wi-Fi or mobile data so CHIXUS can sync with the cloud.',
+          };
+          syncFinished = true;
+          return;
+        }
+
+        // Pass 1: Live connectivity & latency check
         if (!cancelled) {
           setSyncPhaseLabel('Syncing network');
           targetCeiling = 38;
         }
-        await Promise.race([
+        const initialSnap = await Promise.race([
           sharedNetworkConnectivityMonitor.checkNow({ force: true }),
-          new Promise<void>((resolve) => setTimeout(resolve, 1100)),
-        ]).catch(() => {});
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 2200)),
+        ]).catch(() => null);
 
-        // Pass 2: Synchronize live feed, operator session, and Qorvex channel
+        if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+          syncOutcome = {
+            category: 'no_internet',
+            reason:
+              'Your internet connection dropped while connecting. Please restore Wi-Fi or mobile data and retry.',
+          };
+          syncFinished = true;
+          return;
+        }
+
+        // Pass 2: Cloud backend sync (health, feed, notifications, or backend fallback reason)
         if (!cancelled) {
-          setSyncPhaseLabel('Syncing telemetry');
-          targetCeiling = 76;
-        }
-        if (onNetworkSyncRef.current) {
-          await Promise.race([
-            onNetworkSyncRef.current(),
-            new Promise<void>((resolve) => setTimeout(resolve, 1400)),
-          ]).catch(() => {});
-        } else {
-          await new Promise<void>((resolve) => setTimeout(resolve, 380));
+          setSyncPhaseLabel('Syncing cloud');
+          targetCeiling = 78;
         }
 
-        // Pass 3: Secondary link verification check (ensures multi-check stability)
+        if (onNetworkSyncRef.current) {
+          const result = await Promise.race([
+            onNetworkSyncRef.current(),
+            new Promise<NetworkSyncResult>((resolve) =>
+              setTimeout(
+                () =>
+                  resolve({
+                    ok: false,
+                    category: 'unreachable',
+                    reason:
+                      'Cloud synchronization timed out because the network is too slow or unreachable. Please check your connection and try again.',
+                  }),
+                3200
+              )
+            ),
+          ]);
+
+          if (result === false) {
+            syncOutcome = {
+              category: 'unreachable',
+              reason: sanitizeCloudFallbackReason(undefined),
+            };
+            syncFinished = true;
+            return;
+          }
+
+          if (result && typeof result === 'object' && result.ok === false) {
+            syncOutcome = {
+              category: result.category || 'server_reason',
+              reason: sanitizeCloudFallbackReason(result.reason, result.statusCode),
+              statusCode: result.statusCode,
+            };
+            syncFinished = true;
+            return;
+          }
+        }
+
+        // Pass 3: Confirm connectivity didn't report dead offline
         if (!cancelled) {
           setSyncPhaseLabel('Verifying node');
           targetCeiling = 96;
         }
-        await Promise.race([
-          sharedNetworkConnectivityMonitor.checkNow({ force: true }),
-          new Promise<void>((resolve) => setTimeout(resolve, 900)),
-        ]).catch(() => {});
-      } catch {
-        // Offline or unreachable backend: still advance cleanly to homepage
+        const finalSnap =
+          initialSnap?.status === 'poor'
+            ? await Promise.race([
+                sharedNetworkConnectivityMonitor.checkNow({ force: true }),
+                new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+              ]).catch(() => null)
+            : initialSnap;
+
+        if (
+          finalSnap &&
+          finalSnap.status === 'poor' &&
+          typeof navigator !== 'undefined' &&
+          navigator.onLine === false
+        ) {
+          syncOutcome = {
+            category: 'no_internet',
+            reason:
+              'No active internet connection detected. CHIXUS requires a live cloud link rather than an offline session.',
+          };
+          syncFinished = true;
+          return;
+        }
+
+        syncOutcome = null;
+      } catch (err) {
+        syncOutcome = {
+          category:
+            typeof navigator !== 'undefined' && navigator.onLine === false
+              ? 'no_internet'
+              : 'unreachable',
+          reason:
+            typeof navigator !== 'undefined' && navigator.onLine === false
+              ? 'No active internet connection detected. Turn on Wi-Fi or mobile data to sync with CHIXUS Cloud.'
+              : sanitizeCloudFallbackReason(err instanceof Error ? err.message : ''),
+        };
       } finally {
         syncFinished = true;
-        targetCeiling = 100;
+        if (!syncOutcome) {
+          targetCeiling = 100;
+        }
       }
     };
 
-    void runMultiPassNetworkSync();
+    void runCloudSyncCheck();
 
-    // Guaranteed ceiling so slow or offline connections never load forever
+    // Guaranteed timeout guard so slow connections fall back cleanly with a clear reason (never hangs forever)
     maxGuardTimer = setTimeout(() => {
-      syncFinished = true;
-      targetCeiling = 100;
-      triggerCompletion();
+      if (finalized || cancelled) return;
+      if (syncFinished && !syncOutcome) {
+        triggerSuccess();
+      } else {
+        triggerFailure(
+          syncOutcome || {
+            category:
+              typeof navigator !== 'undefined' && navigator.onLine === false
+                ? 'no_internet'
+                : 'unreachable',
+            reason:
+              typeof navigator !== 'undefined' && navigator.onLine === false
+                ? 'No internet connection detected. Please reconnect to enter CHIXUS.'
+                : 'CHIXUS Cloud did not respond in time. Please check your internet connection or try again shortly.',
+          }
+        );
+      }
     }, maxDurationMs);
 
     const tick = (now: number) => {
       if (cancelled || finalized) return;
+
+      if (syncFinished && syncOutcome) {
+        triggerFailure(syncOutcome);
+        return;
+      }
+
       const elapsed = now - startTime;
       const minTimeRatio = Math.min(1, elapsed / minDurationMs);
 
-      const cap = syncFinished && minTimeRatio >= 1 ? 100 : Math.min(97, targetCeiling);
-      const speed = syncFinished && minTimeRatio >= 1 ? 0.22 : 0.085;
+      const cap = syncFinished && !syncOutcome && minTimeRatio >= 1 ? 100 : Math.min(97, targetCeiling);
+      const speed = syncFinished && !syncOutcome && minTimeRatio >= 1 ? 0.22 : 0.085;
       displayProgress = displayProgress + (cap - displayProgress) * speed;
 
-      // Ensure steady monotonic forward progress toward target
       if (elapsed > 250 && displayProgress < Math.min(cap, minTimeRatio * 92)) {
         displayProgress = Math.min(cap, minTimeRatio * 92);
       }
@@ -139,8 +272,8 @@ export const ChixusLoadingSplash: React.FC<ChixusLoadingSplashProps> = ({
       const rounded = Math.min(100, Math.max(0, Math.round(displayProgress)));
       setProgress((prev) => (rounded > prev ? rounded : prev));
 
-      if (syncFinished && minTimeRatio >= 1 && rounded >= 99) {
-        triggerCompletion();
+      if (syncFinished && !syncOutcome && minTimeRatio >= 1 && rounded >= 99) {
+        triggerSuccess();
         return;
       }
 
@@ -187,7 +320,6 @@ export const ChixusLoadingSplash: React.FC<ChixusLoadingSplashProps> = ({
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 flex items-center justify-center"
       >
-        {/* Rotating dual-brand swirl */}
         <div
           className="chixus-splash-swirl absolute w-[420px] h-[420px] rounded-full blur-3xl"
           style={{
@@ -195,7 +327,6 @@ export const ChixusLoadingSplash: React.FC<ChixusLoadingSplashProps> = ({
               'conic-gradient(from 0deg, rgba(45, 212, 191, 0.28) 0deg, rgba(255, 255, 255, 0.14) 70deg, rgba(59, 130, 246, 0.32) 165deg, rgba(45, 212, 191, 0.22) 255deg, rgba(255, 255, 255, 0.12) 320deg, rgba(45, 212, 191, 0.28) 360deg)',
           }}
         />
-        {/* Soft white mist + core glow synchronized with cardiac breath */}
         <div
           className="chixus-splash-mist absolute w-[260px] h-[260px] rounded-full blur-2xl"
           style={{
@@ -217,7 +348,6 @@ export const ChixusLoadingSplash: React.FC<ChixusLoadingSplashProps> = ({
             transform: `perspective(700px) rotateX(${tilt.rx}deg) rotateY(${tilt.ry}deg)`,
           }}
         >
-          {/* Expanding Acoustic Ripples (radial wave decay synced to lub-dub) */}
           <div
             aria-hidden="true"
             className="chixus-acoustic-ripple-a pointer-events-none absolute w-[132px] h-[132px] rounded-full"
@@ -235,7 +365,6 @@ export const ChixusLoadingSplash: React.FC<ChixusLoadingSplashProps> = ({
             }}
           />
 
-          {/* 132px Circular Logo Core with Dual-Beat Cardiac Pulse */}
           <div
             className={`chixus-cardiac-core relative z-10 w-[132px] h-[132px] rounded-full overflow-hidden ${
               isReady ? 'chixus-splash-logo-ready' : ''
@@ -255,7 +384,6 @@ export const ChixusLoadingSplash: React.FC<ChixusLoadingSplashProps> = ({
               }}
               className="w-full h-full object-cover rounded-full"
             />
-            {/* Subtle 1px inner edge highlight */}
             <div
               aria-hidden="true"
               className="pointer-events-none absolute inset-0 rounded-full"
@@ -263,7 +391,6 @@ export const ChixusLoadingSplash: React.FC<ChixusLoadingSplashProps> = ({
                 boxShadow: 'inset 0 0 0 1px rgba(255, 255, 255, 0.24)',
               }}
             />
-            {/* Diagonal Specular Sheen Sweep */}
             <div className="chixus-splash-sheen pointer-events-none absolute inset-0" />
           </div>
         </div>
@@ -283,11 +410,7 @@ export const ChixusLoadingSplash: React.FC<ChixusLoadingSplashProps> = ({
 
         <p className="mt-1 min-h-[14px] text-xs text-slate-400 tracking-wide">{''}</p>
 
-        {/* Three Harmonic Breathing Dots alternating #2DD4BF and #3B82F6 */}
-        <div
-          aria-hidden="true"
-          className="mt-3 flex items-center justify-center gap-2.5"
-        >
+        <div aria-hidden="true" className="mt-3 flex items-center justify-center gap-2.5">
           <span
             className="chixus-harmonic-dot-1 h-2 w-2 rounded-full"
             style={{
@@ -311,7 +434,6 @@ export const ChixusLoadingSplash: React.FC<ChixusLoadingSplashProps> = ({
           />
         </div>
 
-        {/* Minimal Progress Track */}
         <div
           className="mt-4 w-[188px] h-1 rounded-full overflow-hidden border border-white/10"
           style={{ backgroundColor: 'rgba(15, 23, 42, 0.85)' }}
@@ -327,9 +449,7 @@ export const ChixusLoadingSplash: React.FC<ChixusLoadingSplashProps> = ({
 
         {showRedirectStatus && (
           <p className="mt-3 text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-300">
-            {isReady
-              ? tr('Ready', language)
-              : `${syncPhaseLabel} · ${progress}%`}
+            {isReady ? tr('Ready', language) : `${syncPhaseLabel} · ${progress}%`}
           </p>
         )}
       </div>

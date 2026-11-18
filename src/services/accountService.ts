@@ -495,8 +495,17 @@ export async function registerOperatorAccount(input: {
   password: string;
   headline?: string;
   country: string;
-}): Promise<{ token: string; user: PermanentUserIdentity; preferences?: UserPreferencesPayload }> {
-  const data = await apiFetchJson<AuthSessionResponse>(API_ENDPOINTS.AUTH_REGISTER(), {
+}): Promise<{
+  token: string;
+  user: PermanentUserIdentity;
+  preferences?: UserPreferencesPayload;
+  welcomeNotification?: Record<string, any>;
+  notifications?: Array<Record<string, any>>;
+}> {
+  const data = await apiFetchJson<AuthSessionResponse & {
+    welcome_notification?: Record<string, any>;
+    notifications?: Array<Record<string, any>>;
+  }>(API_ENDPOINTS.AUTH_REGISTER(), {
     method: 'POST',
     requireAuth: false,
     body: JSON.stringify({
@@ -534,7 +543,9 @@ export async function registerOperatorAccount(input: {
   return {
     token,
     user: normalizeAccountProfile(rawUser),
-    preferences: data.preferences ? normalizePreferences(data.preferences) : undefined
+    preferences: data.preferences ? normalizePreferences(data.preferences) : undefined,
+    welcomeNotification: data.welcome_notification,
+    notifications: Array.isArray(data.notifications) ? data.notifications : undefined
   };
 }
 

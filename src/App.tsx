@@ -70,8 +70,11 @@ import SettingsDrawerSplitView from './components/SettingsDrawerSplitView';
 import HelpCenterDrawerSplitView from './components/HelpCenterDrawerSplitView';
 import NetworkStatusIcon from './components/NetworkStatusIcon';
 import { OnboardingWelcomeScreen } from './components/OnboardingWelcomeScreen';
-import { ChixusLoadingSplash } from './components/ChixusLoadingSplash';
-import OfficialWelcomeBanner from './components/OfficialWelcomeBanner';
+import { ChixusLoadingSplash, type NetworkSyncResult } from './components/ChixusLoadingSplash';
+import {
+  CloudDisconnectedFallback,
+  type CloudSyncFailureState
+} from './components/CloudDisconnectedFallback';
 import DesktopQorvexPanel from './components/DesktopQorvexPanel';
 import { tr, isRtlLanguage } from './i18n/translations';
 import { sharedNetworkConnectivityMonitor } from './services/networkConnectivityService';
@@ -96,6 +99,7 @@ import {
   getAuthToken,
   getBackendBaseUrl,
   getWebSocketUrl,
+  sanitizeCloudFallbackReason,
   setAuthToken
 } from './apiConfig';
 import {
@@ -1693,24 +1697,153 @@ export function App() {
   } | null>(null);
   const [isBootLoading, setIsBootLoading] = useState<boolean>(true);
   const [showTransitionSplash, setShowTransitionSplash] = useState<boolean>(false);
+  const [cloudSyncFailure, setCloudSyncFailure] = useState<CloudSyncFailureState | null>(null);
+  const [isRetryingCloudSync, setIsRetryingCloudSync] = useState<boolean>(false);
   const handleLoadingComplete = useCallback(() => {
+    setCloudSyncFailure(null);
+    setIsRetryingCloudSync(false);
     setIsBootLoading(false);
     setShowTransitionSplash(false);
   }, []);
-  const performNetworkSyncSequence = useCallback(async () => {
-    try {
-      const base = getBackendBaseUrl();
-      await Promise.allSettled([
-        fetch(`${base}/health`, { cache: 'no-store' }),
-        fetch(`${base}/api/posts`, { cache: 'no-store' }),
-      ]);
-    } catch {
-      // Non-fatal on offline/local networks; splash always completes cleanly
-    }
+  const handleLoadingSyncFailed = useCallback((failure: CloudSyncFailureState) => {
+    setCloudSyncFailure(failure);
+    setIsRetryingCloudSync(false);
+    setIsBootLoading(false);
+    setShowTransitionSplash(false);
   }, []);
+  const performNetworkSyncSequence = useCallback(async (): Promise<NetworkSyncResult> => {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      return {
+        ok: false,
+        category: 'no_internet',
+        reason:
+          'No active internet connection detected. Turn on Wi-Fi or mobile data so CHIXUS can sync with the cloud.'
+      };
+    }
+
+    const base = getBackendBaseUrl();
+    const activeId = (
+      localStorage.getItem('chixus_generated_secret_id') ||
+      generatedSecretID ||
+      currentUserProfile?.secretId ||
+      ''
+    )
+      .trim()
+      .toUpperCase();
+
+    try {
+      const healthRes = await fetch(`${base}/health`, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        cache: 'no-store'
+      });
+      const contentType = healthRes.headers?.get?.('content-type') || '';
+      if (contentType.toLowerCase().includes('text/html')) {
+        return {
+          ok: false,
+          category: 'unreachable',
+          reason:
+            'CHIXUS Cloud server gateway is currently unreachable. Please check your connection or try again shortly.'
+        };
+      }
+
+      const healthJson = await healthRes.json().catch(() => null);
+      const backendStatus = String(healthJson?.status || '').toLowerCase();
+      if (
+        !healthRes.ok ||
+        backendStatus === 'error' ||
+        backendStatus === 'offline' ||
+        backendStatus === 'maintenance' ||
+        backendStatus === 'unavailable' ||
+        healthJson?.model_readiness === 'NOT_READY'
+      ) {
+        const rawBackendReason =
+          healthJson?.reason ||
+          healthJson?.fallback_reason ||
+          healthJson?.user_message ||
+          healthJson?.maintenance_message ||
+          healthJson?.message ||
+          healthJson?.detail;
+        return {
+          ok: false,
+          category:
+            healthRes.status === 401 || healthRes.status === 403 ? 'session_expired' : 'server_reason',
+          reason: sanitizeCloudFallbackReason(rawBackendReason, healthRes.status),
+          statusCode: healthRes.status
+        };
+      }
+
+      const postsRes = await fetch(`${base}/api/posts`, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        cache: 'no-store'
+      });
+      if (!postsRes.ok) {
+        const postsErr = await postsRes.json().catch(() => null);
+        const rawPostReason =
+          postsErr?.reason ||
+          postsErr?.fallback_reason ||
+          postsErr?.user_message ||
+          postsErr?.message ||
+          postsErr?.detail;
+        return {
+          ok: false,
+          category:
+            postsRes.status === 401 || postsRes.status === 403 ? 'session_expired' : 'server_reason',
+          reason: sanitizeCloudFallbackReason(rawPostReason, postsRes.status),
+          statusCode: postsRes.status
+        };
+      }
+
+      if (activeId) {
+        await fetch(API_ENDPOINTS.NOTIFICATIONS(activeId), {
+          headers: getAuthHeaders(),
+          cache: 'no-store'
+        }).catch(() => {});
+      }
+
+      return { ok: true };
+    } catch (err) {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        return {
+          ok: false,
+          category: 'no_internet',
+          reason:
+            'Your internet connection dropped while connecting. Restore Wi-Fi or mobile data and tap Retry Cloud Sync.'
+        };
+      }
+      return {
+        ok: false,
+        category: 'unreachable',
+        reason: sanitizeCloudFallbackReason(err instanceof Error ? err.message : '')
+      };
+    }
+  }, [currentUserProfile?.secretId, generatedSecretID]);
   const triggerNetworkResync = useCallback(() => {
+    setCloudSyncFailure(null);
     setShowTransitionSplash(true);
   }, []);
+
+  // Monitor live connectivity so CHIXUS never silently falls back into fake offline mode
+  useEffect(() => {
+    const unsubscribe = sharedNetworkConnectivityMonitor.subscribe((snap) => {
+      if (isBootLoading || showTransitionSplash) return;
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        setCloudSyncFailure({
+          category: 'no_internet',
+          reason:
+            'Your device lost internet access. CHIXUS syncs live to the cloud and does not run in offline mode — reconnect to continue.'
+        });
+      } else if (snap.status === 'poor' && snap.consecutiveFailures >= 3) {
+        setCloudSyncFailure({
+          category: 'unreachable',
+          reason:
+            'Connection to CHIXUS Cloud was interrupted. Your workspace stays safe in the cloud — check your network and retry.'
+        });
+      }
+    });
+    return () => unsubscribe();
+  }, [isBootLoading, showTransitionSplash]);
   const [guestQorvexMessages, setGuestQorvexMessages] = useState<ChatMessage[]>(() => [
     {
       id: 'msg-chixus-ai-welcome-guest',
@@ -1831,7 +1964,7 @@ export function App() {
     senderId?: string;
     senderName?: string;
     senderAvatar?: string;
-    actionType?: 'connection_request' | 'connection_accepted' | 'direct_message' | 'post_like';
+    actionType?: 'connection_request' | 'connection_accepted' | 'direct_message' | 'post_like' | 'welcome' | 'system_welcome' | 'announcement' | 'system_alert';
     requestId?: string;
   }>>([]);
   const [selectedDrawerAlert, setSelectedDrawerAlert] = useState<{
@@ -1845,7 +1978,7 @@ export function App() {
     senderId?: string;
     senderName?: string;
     senderAvatar?: string;
-    actionType?: 'connection_request' | 'connection_accepted' | 'direct_message' | 'post_like';
+    actionType?: 'connection_request' | 'connection_accepted' | 'direct_message' | 'post_like' | 'welcome' | 'system_welcome' | 'announcement' | 'system_alert';
     requestId?: string;
   } | null>(null);
   const [isEditProfileModalOpen, setIsEditProfileModalOpen] = useState(false);
@@ -2898,9 +3031,6 @@ export function App() {
   ): string => {
     const cleanId = (authorId || '').trim().toUpperCase();
     const cleanName = (authorName || '').trim().toLowerCase();
-    if (cleanId === 'CHIXUS-OFFICIAL' || cleanName === 'chixus official') {
-      return metallicLogo;
-    }
     try {
       const lsDirRaw = localStorage.getItem('chixus_live_operator_avatars_v3');
       if (lsDirRaw) {
@@ -3398,7 +3528,7 @@ export function App() {
     };
   }, []);
 
-  // Timeline Feed Posts (Initializes with operator & official welcome cards when empty, unless deleted)
+  // Timeline Feed Posts (Initializes cleanly when empty, filtering out legacy CHIXUS-OFFICIAL seed)
   const [posts, setPosts] = useState<PostItem[]>(() => {
     try {
       const saved = localStorage.getItem('chixus_feed_posts_v7');
@@ -3406,28 +3536,35 @@ export function App() {
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map((p: any) => {
-            const norm = normalizePostWithReshare({
-              ...p,
-              createdAt: parsePostTimestamp(p) || Date.now()
+          const filtered = parsed.filter(
+            (p: any) =>
+              p?.id !== 'post-seed-chixus-official-welcome' &&
+              String(p?.authorId || '').trim().toUpperCase() !== 'CHIXUS-OFFICIAL'
+          );
+          if (filtered.length > 0) {
+            return filtered.map((p: any) => {
+              const norm = normalizePostWithReshare({
+                ...p,
+                createdAt: parsePostTimestamp(p) || Date.now()
+              });
+              const pKey = String(norm.id || '');
+              const mapLikes = Array.isArray(likesMap[pKey]) ? likesMap[pKey] : [];
+              const existingLikes = Array.isArray(norm.likedByNodeIds) ? norm.likedByNodeIds : [];
+              let mergedLikes = Array.from(
+                new Set([...existingLikes, ...mapLikes].map((x) => String(x || '').trim().toUpperCase()).filter(Boolean))
+              );
+              const verifCount = Number(norm.verifications) || 0;
+              if (verifCount > 0 && mergedLikes.length === 0) {
+                const seedAuthorId = (norm.authorId || 'CHI-8492-NG').trim().toUpperCase();
+                mergedLikes = [seedAuthorId];
+              }
+              return {
+                ...norm,
+                likedByNodeIds: mergedLikes,
+                verifications: Math.max(verifCount, mergedLikes.length)
+              };
             });
-            const pKey = String(norm.id || '');
-            const mapLikes = Array.isArray(likesMap[pKey]) ? likesMap[pKey] : [];
-            const existingLikes = Array.isArray(norm.likedByNodeIds) ? norm.likedByNodeIds : [];
-            let mergedLikes = Array.from(
-              new Set([...existingLikes, ...mapLikes].map((x) => String(x || '').trim().toUpperCase()).filter(Boolean))
-            );
-            const verifCount = Number(norm.verifications) || 0;
-            if (verifCount > 0 && mergedLikes.length === 0) {
-              const seedAuthorId = (norm.authorId || 'CHI-8492-NG').trim().toUpperCase();
-              mergedLikes = [seedAuthorId];
-            }
-            return {
-              ...norm,
-              likedByNodeIds: mergedLikes,
-              verifications: Math.max(verifCount, mergedLikes.length)
-            };
-          });
+          }
         }
       }
     } catch {
@@ -3448,21 +3585,6 @@ export function App() {
         verifications: 1,
         verified: true,
         likedByNodeIds: ['CHI-8492-NG'],
-        comments: []
-      },
-      {
-        id: 'post-seed-chixus-official-welcome',
-        clientId: 'post-seed-chixus-official-welcome',
-        author: 'CHIXUS Official',
-        authorId: 'CHIXUS-OFFICIAL',
-        badge: 'Official Network Intelligence',
-        avatar: metallicLogo,
-        time: '1 day ago',
-        createdAt: now - 24 * 60 * 60 * 1000,
-        content: 'Welcome to CHIXUS\nYour technical intelligence and diagnostics platform for technicians, engineers and innovators.',
-        verifications: 0,
-        verified: false,
-        likedByNodeIds: [],
         comments: []
       }
     ];
@@ -3613,12 +3735,7 @@ export function App() {
   const isAuthorCurrentUser = (authorName?: string, authorId?: string, _postId?: string): boolean => {
     const cleanAuthor = (authorName || '').trim();
     const lowerAuthor = cleanAuthor.toLowerCase();
-    if (
-      lowerAuthor === 'chixus ai' ||
-      lowerAuthor === 'chixus official' ||
-      authorId === CHIXUS_AI_BOT_ID ||
-      authorId === 'CHIXUS-OFFICIAL'
-    ) {
+    if (lowerAuthor === 'chixus ai' || authorId === CHIXUS_AI_BOT_ID) {
       return false;
     }
 
@@ -4222,13 +4339,6 @@ export function App() {
         const resolvePeerLiveAvAndName = (authorNameRaw?: string, authorIdRaw?: string, fallbackAv?: string) => {
           const aid = String(authorIdRaw || '').trim().toUpperCase();
           const aname = String(authorNameRaw || '').trim();
-          if (aid === 'CHIXUS-OFFICIAL' || aname.toLowerCase() === 'chixus official') {
-            return {
-              name: 'CHIXUS Official',
-              headline: '',
-              avatar: metallicLogo
-            };
-          }
           const liveMatch = (aid ? liveById[aid] : undefined) || (aname ? liveByName[aname.toLowerCase()] : undefined);
           const isChinazaPeer =
             aid === 'CHI-7649-NG' || aid === 'CHI-4591-NG' || aname.toLowerCase().includes('chinaza');
@@ -4630,6 +4740,7 @@ export function App() {
   const [holdingPostId, setHoldingPostId] = useState<string | null>(null);
   const [holdingPostProgress, setHoldingPostProgress] = useState<number>(0);
   const [contextMenuPost, setContextMenuPost] = useState<PostItem | null>(null);
+  const [repostTargetPost, setRepostTargetPost] = useState<PostItem | null>(null);
   const [confirmDeletePost, setConfirmDeletePost] = useState<boolean>(false);
   const [editingPostTarget, setEditingPostTarget] = useState<PostItem | null>(null);
   const [editingPostContent, setEditingPostContent] = useState<string>('');
@@ -5092,13 +5203,32 @@ export function App() {
 
   const markNotificationsAsReadInStorage = (ids: string[]) => {
     try {
+      const cleanIds = ids.map((id) => String(id || '').trim()).filter(Boolean);
       const readSet = getReadNotificationIdsSet();
-      ids.forEach((id) => {
-        if (id) readSet.add(String(id).trim());
-      });
+      cleanIds.forEach((id) => readSet.add(id));
       const serialized = JSON.stringify(Array.from(readSet).slice(-500));
       safeSetLocalStorage(getReadNotificationsKey(), serialized);
       safeSetLocalStorage('chixus_read_notifications_v2_GLOBAL', serialized);
+
+      const activeId = (
+        currentUserProfile?.secretId ||
+        generatedSecretID ||
+        localStorage.getItem('chixus_generated_secret_id') ||
+        ''
+      )
+        .trim()
+        .toUpperCase();
+      if (activeId && cleanIds.length > 0 && !isGuestMode) {
+        fetch(API_ENDPOINTS.NOTIFICATIONS_MARK_READ(), {
+          method: 'POST',
+          headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({
+            operator_id: activeId,
+            notification_ids: cleanIds
+          }),
+          keepalive: true
+        }).catch(() => {});
+      }
     } catch {}
   };
 
@@ -5960,16 +6090,11 @@ export function App() {
   const chatDocInputRef = useRef<HTMLInputElement>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const desktopChatScrollRef = useRef<HTMLDivElement>(null);
+  const [desktopQorvexText, setDesktopQorvexText] = useState<string>('');
+  const [isDesktopQorvexAttachOpen, setIsDesktopQorvexAttachOpen] = useState<boolean>(false);
   const [showChatScrollDownBtn, setShowChatScrollDownBtn] = useState<boolean>(false);
   const chatSavedScrollMapRef = useRef<Record<string, number>>({});
   const prevChatMsgCountRef = useRef<number>(chatMessages.length);
-
-  useEffect(() => {
-    const el = desktopChatScrollRef.current;
-    if (el) {
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [chatMessages.length, guestQorvexMessages.length, isChixusAiTyping, activeContactId]);
 
   // Profile Edit Temp State
   const [editNameInput, setEditNameInput] = useState(userName);
@@ -7313,6 +7438,7 @@ export function App() {
           const fId = String(fromIdRaw || '').trim().toUpperCase();
           const tName = String(toNameRaw || '').trim().toLowerCase();
           if (fId && fId === myId) return false;
+          if (tId === '*' || tId === 'ALL' || tId === 'BROADCAST') return true;
           if (tId && tId === myId) return true;
           if (isMyChinaza && (tId === 'CHI-7649-NG' || tId === 'CHI-4591-NG' || tName.includes('chinaza'))) return true;
           if (myCleanName && tName && tName === myCleanName) return true;
@@ -7515,10 +7641,49 @@ export function App() {
           }
         } catch {}
 
+        // Fetch backend REST notifications (/api/notifications) so welcome & system alerts sent by backend appear immediately
+        try {
+          const notifRestRes = await fetch(API_ENDPOINTS.NOTIFICATIONS(myId), {
+            headers: getAuthHeaders(),
+            cache: 'no-store'
+          });
+          const notifRestData = await notifRestRes.json().catch(() => null);
+          const restItems: any[] = Array.isArray(notifRestData)
+            ? notifRestData
+            : Array.isArray(notifRestData?.notifications)
+            ? notifRestData.notifications
+            : Array.isArray(notifRestData?.data)
+            ? notifRestData.data
+            : [];
+          for (const rawItem of restItems) {
+            if (!rawItem) continue;
+            const rawTitle = String(rawItem.title || '').trim();
+            const rawDetail = String(rawItem.detail || rawItem.message || rawItem.body || '').trim();
+            if (!rawTitle && !rawDetail) continue;
+            const nId = String(rawItem.id || `rest-notif-${rawItem.type || 'alert'}-${rawItem.created_at || Date.now()}`);
+            const normalizedRestItem = {
+              ...rawItem,
+              id: nId,
+              to_id: rawItem.to_id || rawItem.operator_id || myId,
+              to_name: rawItem.to_name || userName,
+              from_id: rawItem.from_id || rawItem.sender_id || 'SYSTEM',
+              from_name: rawItem.from_name || rawItem.sender_name || 'CHIXUS',
+              from_avatar: rawItem.from_avatar || rawItem.sender_avatar || metallicLogo,
+              type: rawItem.type || rawItem.actionType || 'announcement',
+              title: rawTitle || rawDetail,
+              detail: rawDetail,
+              created_at: Number(rawItem.created_at || rawItem.createdAt) || Date.now(),
+              read: Boolean(rawItem.read)
+            };
+            const existing = notifMap.get(nId);
+            notifMap.set(nId, { ...(existing || {}), ...normalizedRestItem });
+          }
+        } catch {}
+
         try {
           const escId = myId.replace(/'/g, "''");
           const escName = myCleanName.replace(/'/g, "''");
-          const notifSql = `SELECT * FROM chixus_notifications WHERE UPPER(to_id)=UPPER('${escId}') OR ( '${escName}' != '' AND LOWER(to_name)=LOWER('${escName}') ) ORDER BY created_at DESC LIMIT 60`;
+          const notifSql = `SELECT * FROM chixus_notifications WHERE UPPER(to_id)=UPPER('${escId}') OR UPPER(to_id) IN ('*', 'ALL', 'BROADCAST') OR ( '${escName}' != '' AND LOWER(to_name)=LOWER('${escName}') ) ORDER BY created_at DESC LIMIT 60`;
           const res = await fetch(`${API_BASE_URL}/api/admin/sql?key=chixus_admin_2026&query=${encodeURIComponent(notifSql)}`);
           const data = await res.json().catch(() => null);
           if (res.ok && data && data.status === 'success' && Array.isArray(data.data)) {
@@ -7606,8 +7771,14 @@ export function App() {
         const activePrefs = userPreferencesRef.current;
         const myNotifs = Array.from(notifMap.values())
           .filter((n: any) => {
-            if (deletedNotifIds.has(String(n.id)) || !isAddressedToMe(n.to_id, n.to_name, n.from_id)) return false;
+            if (deletedNotifIds.has(String(n.id))) return false;
             const nType = String(n.type || '').toLowerCase();
+            const isSystemNotif =
+              nType === 'welcome' ||
+              nType === 'system_welcome' ||
+              nType === 'announcement' ||
+              nType === 'system_alert';
+            if (!isSystemNotif && !isAddressedToMe(n.to_id, n.to_name, n.from_id)) return false;
             if ((nType === 'contact_join' || nType === 'contact_joined') && !activePrefs.inAppAlerts.contactJoin) {
               return false;
             }
@@ -7623,8 +7794,17 @@ export function App() {
           const resolvedNotifItems = await Promise.all(
             myNotifs.map(async (n: any) => {
               const sId = String(n.from_id || '').trim().toUpperCase();
-              const sName = String(n.from_name || sId || 'Operator');
-              const sAv = await resolveLiveSenderAvatar(sId, sName, n.from_avatar);
+              const nTypeLower = String(n.type || '').toLowerCase();
+              const isSystem =
+                sId === 'SYSTEM' ||
+                sId === 'CHIXUS' ||
+                !sId ||
+                nTypeLower === 'welcome' ||
+                nTypeLower === 'system_welcome' ||
+                nTypeLower === 'announcement' ||
+                nTypeLower === 'system_alert';
+              const sName = isSystem ? String(n.from_name || 'CHIXUS') : String(n.from_name || sId || 'Operator');
+              const sAv = isSystem ? (n.from_avatar || metallicLogo) : await resolveLiveSenderAvatar(sId, sName, n.from_avatar);
               const nIdStr = String(n.id);
               return {
                 id: nIdStr,
@@ -7632,9 +7812,9 @@ export function App() {
                 message: String(n.detail || n.message || ''),
                 timestamp: formatRelativeTime({ createdAt: Number(n.created_at) || Date.now() }),
                 createdAt: Number(n.created_at) || Date.now(),
-                read: readNotifIds.has(nIdStr),
-                type: 'mesh' as const,
-                senderId: sId,
+                read: Boolean(n.read) || readNotifIds.has(nIdStr),
+                type: (isSystem ? 'security' : 'mesh') as 'security' | 'mesh',
+                senderId: isSystem ? '' : sId,
                 senderName: sName,
                 senderAvatar: sAv,
                 actionType: (n.type || 'connection_request') as any,
@@ -8995,6 +9175,7 @@ export function App() {
     setPosts((prev) => [sharedPost, ...prev]);
     setShareFeedComment('');
     setIsShareDrawerOpen(false);
+    setRepostTargetPost(null);
     setActiveTab('feed');
     logUserActivity(
       `Reposted ${sourceOriginal.author}'s post to Feed${cleanNote ? ` with thoughts: "${cleanNote.slice(0, 60)}"` : ' (Instant Repost)'}`
@@ -9007,15 +9188,29 @@ export function App() {
 
     try {
       const encodedText = encodePostContentForBackend(sharedPost);
-      await fetch(`${API_BASE_URL}/api/posts`, {
+      await fetch(API_ENDPOINTS.POST_REPOST(targetPost.id), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           author_id: myNodeId,
+          author: userName || myNodeId,
+          thoughts: cleanNote,
+          instant: !cleanNote,
           content: encodedText,
           image_url: sourceOriginal.postMedia || null
         })
-      });
+      }).catch(() => {});
+
+      await fetch(API_ENDPOINTS.POSTS(), {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          author_id: myNodeId,
+          author: userName || myNodeId,
+          content: encodedText,
+          image_url: sourceOriginal.postMedia || null
+        })
+      }).catch(() => {});
       const safeAuthor = (userName || myNodeId).replace(/'/g, "''");
       const safeHead = (userHeadline || '').replace(/'/g, "''");
       const safeLoc = (userLocation || 'Sector Relay // Nigeria').replace(/'/g, "''");
@@ -9857,8 +10052,13 @@ export function App() {
       return updated;
     });
 
-    // Also delete from backend SQLite posts table so it is permanently removed everywhere
+    // Delete from backend REST & SQLite posts table so it is permanently removed everywhere
     try {
+      fetch(API_ENDPOINTS.POST_BY_ID(targetId), {
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      }).catch(() => {});
+
       const rawNumStr = targetId.replace('backend-post-', '');
       if (/^\d+$/.test(rawNumStr)) {
         const numericId = parseInt(rawNumStr, 10);
@@ -9899,10 +10099,21 @@ export function App() {
       return next;
     });
 
-    // Silent background update to SQLite if reachable
+    // Update on backend REST API & SQLite
     try {
       const esc = (s: string) => String(s || '').replace(/'/g, "''");
       const newEncoded = encodePostContentForBackend(updatedPost, updatedPost.authorId);
+
+      fetch(API_ENDPOINTS.POST_BY_ID(targetId), {
+        method: 'PUT',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          content: newEncoded,
+          raw_content: trimmed,
+          author_id: updatedPost.authorId
+        })
+      }).catch(() => {});
+
       const rawNumStr = targetId.replace('backend-post-', '').replace('db-post-', '');
       if (/^\d+$/.test(rawNumStr)) {
         const sql = `UPDATE posts SET content='${esc(newEncoded)}' WHERE id=${parseInt(rawNumStr, 10)};`;
@@ -10918,16 +11129,23 @@ export function App() {
     });
   };
 
-  const handleSendMessage = async (e: React.FormEvent, quickQuestionOverride?: string) => {
+  const handleSendMessage = async (
+    e: React.FormEvent,
+    quickQuestionOverride?: string,
+    forceContactId?: string,
+    customInputText?: string
+  ) => {
     e.preventDefault();
     let activeVoiceNoteUrl = chatVoiceNoteAttachment;
     if (isRecordingVoiceNote) {
       const stoppedUrl = await handleStopVoiceNoteRecording(false);
       if (stoppedUrl) activeVoiceNoteUrl = stoppedUrl;
     }
-    const cleanChatText = cleanAiMessageText(safeTrim(quickQuestionOverride ?? newChatText));
+    const rawComposerText =
+      quickQuestionOverride ?? (customInputText !== undefined ? customInputText : newChatText);
+    const cleanChatText = cleanAiMessageText(safeTrim(rawComposerText));
     if (!cleanChatText && !chatImageAttachment && !chatFileAttachment && !activeVoiceNoteUrl) return;
-    const targetContactId = activeContactId || CHIXUS_AI_BOT_ID;
+    const targetContactId = forceContactId || activeContactId || CHIXUS_AI_BOT_ID;
     const currentPeer = (isGuestMode ? [defaultChixusBotContact] : contacts).find((c) => c.id === targetContactId);
     const isChixusAiBot = targetContactId === CHIXUS_AI_BOT_ID || currentPeer?.name === 'Qorvex' || currentPeer?.name === 'Qordex' || currentPeer?.name === 'CHIXUS AI';
     if (isGuestMode && !isChixusAiBot) {
@@ -11028,12 +11246,17 @@ export function App() {
     }
 
     if (!quickQuestionOverride) {
-      setNewChatText('');
+      if (customInputText !== undefined) {
+        setDesktopQorvexText('');
+      } else {
+        setNewChatText('');
+      }
       setChatImageAttachment(null);
       setChatFileAttachment(null);
       setChatVoiceNoteAttachment(null);
       setChatVoiceNoteTranscript('');
       setIsAttachMenuOpen(false);
+      setIsDesktopQorvexAttachOpen(false);
     }
 
     if (isChixusAiBot) {
@@ -11614,10 +11837,21 @@ export function App() {
   const activeConversation = (isGuestMode ? guestQorvexMessages : chatMessages).filter(
     (m) => m.contactId === activeContactId && !isAutoGeneratedPeerReply(m.text)
   );
+  const desktopQorvexContact =
+    (isGuestMode ? [defaultChixusBotContact] : contacts).find(
+      (c) =>
+        c.id === CHIXUS_AI_BOT_ID ||
+        c.name === 'Qorvex' ||
+        c.name === 'Qordex' ||
+        c.name === 'CHIXUS AI'
+    ) || defaultChixusBotContact;
+  const desktopQorvexConversation = (isGuestMode ? guestQorvexMessages : chatMessages).filter(
+    (m) => m.contactId === CHIXUS_AI_BOT_ID && !isAutoGeneratedPeerReply(m.text)
+  );
 
   // -------------------------------------------------------------
-  // EXCLUSIVE FULL-SCREEN NETWORK-SYNCED LOADING GATE
-  // Never shows Feed/Inspect/Headers underneath while loading!
+  // EXCLUSIVE FULL-SCREEN CLOUD-SYNCED LOADING & DISCONNECTED GATE
+  // Never shows Feed/Inspect/Headers underneath while loading or offline!
   // -------------------------------------------------------------
   if (isBootLoading || showTransitionSplash) {
     return (
@@ -11627,6 +11861,26 @@ export function App() {
         language={userPreferences.language}
         onNetworkSync={performNetworkSyncSequence}
         onComplete={handleLoadingComplete}
+        onSyncFailed={handleLoadingSyncFailed}
+      />
+    );
+  }
+
+  if (cloudSyncFailure) {
+    return (
+      <CloudDisconnectedFallback
+        failure={cloudSyncFailure}
+        isRetrying={isRetryingCloudSync}
+        onRetrySync={() => {
+          sound.playClick();
+          setIsRetryingCloudSync(true);
+          triggerNetworkResync();
+        }}
+        onOpenLogin={() => {
+          sound.playClick();
+          setCloudSyncFailure(null);
+          setOnboardStage('login');
+        }}
       />
     );
   }
@@ -13397,6 +13651,32 @@ export function App() {
                           safeSetLocalStorage('chixus_headline_v7', profileObj.headline);
                           localStorage.removeItem('chixus_explicit_logout_v1');
                           localStorage.removeItem('chixus_guest_mode_v1');
+
+                          // Ingest any real notifications returned directly by the backend /api/auth/register endpoint
+                          const regNotifRawList = [
+                            ...(Array.isArray(regResult.notifications) ? regResult.notifications : []),
+                            ...(regResult.welcomeNotification ? [regResult.welcomeNotification] : []),
+                          ].filter((rn: any) => rn && (rn.title || rn.detail || rn.message || rn.body));
+                          if (regNotifRawList.length > 0) {
+                            const formattedWelcome = regNotifRawList.map((rn: any, idx: number) => ({
+                              id: String(rn.id || `backend-reg-${finalAssignedId}-${Date.now()}-${idx}`),
+                              title: String(rn.title || rn.detail || rn.message || rn.body || ''),
+                              message: String(rn.detail || rn.message || rn.body || ''),
+                              timestamp: 'Just now',
+                              createdAt: Number(rn.created_at || rn.createdAt) || Date.now(),
+                              read: false,
+                              type: 'security' as const,
+                              senderId: String(rn.from_id || ''),
+                              senderName: String(rn.from_name || 'CHIXUS'),
+                              senderAvatar: rn.from_avatar || metallicLogo,
+                              actionType: (rn.type || 'welcome') as any,
+                            }));
+                            setNotifications((prev) => {
+                              const existingIds = new Set(prev.map((x) => x.id));
+                              const deduped = formattedWelcome.filter((x) => !existingIds.has(x.id));
+                              return deduped.length > 0 ? [...deduped, ...prev] : prev;
+                            });
+                          }
                         } catch {}
 
                         setTermsAgreedChecked(false);
@@ -15034,23 +15314,10 @@ export function App() {
                 ) : (
                   posts.map((post) => {
                   const isInstantLinkedInRepost = Boolean(post.resharedPost && !safeTrim(post.content));
-                  const isOfficialBroadcast =
-                    String(post.authorId || '').trim().toUpperCase() === 'CHIXUS-OFFICIAL' ||
-                    post.id === 'post-seed-chixus-official-welcome';
-                  const isMyOwnPost = !isOfficialBroadcast && isPostOwnedByCurrentUser(post);
-                  const displayPostAuthor = isOfficialBroadcast
-                    ? 'CHIXUS Official'
-                    : isMyOwnPost
-                    ? userName
-                    : post.author;
-                  const displayPostBadge = isOfficialBroadcast
-                    ? ''
-                    : isMyOwnPost
-                    ? (userHeadline || post.badge)
-                    : post.badge;
-                  const displayPostAvatar = isOfficialBroadcast
-                    ? metallicLogo
-                    : isMyOwnPost
+                  const isMyOwnPost = isPostOwnedByCurrentUser(post);
+                  const displayPostAuthor = isMyOwnPost ? userName : post.author;
+                  const displayPostBadge = isMyOwnPost ? (userHeadline || post.badge) : post.badge;
+                  const displayPostAvatar = isMyOwnPost
                     ? avatarUrl
                     : getLivePeerAvatar(
                         post.authorId,
@@ -15141,14 +15408,8 @@ export function App() {
                       <div className="flex items-start justify-between gap-2">
                         <div
                           className="flex items-center gap-3 cursor-pointer min-w-0"
-                          onClick={() => {
-                            if (isOfficialBroadcast) {
-                              setActiveTab('inspect');
-                              return;
-                            }
-                            openPeerProfile(displayPostAuthor, post.authorId);
-                          }}
-                          title={isOfficialBroadcast ? 'CHIXUS Official Platform' : `View ${displayPostAuthor}'s operator profile`}
+                          onClick={() => openPeerProfile(displayPostAuthor, post.authorId)}
+                          title={`View ${displayPostAuthor}'s operator profile`}
                         >
                           <div className="relative h-11 w-11 shrink-0 rounded-full border border-slate-600/80 overflow-hidden bg-[#070b12]">
                             <img
@@ -15166,12 +15427,6 @@ export function App() {
                                 style={{ fontFamily: "'Space Grotesk', -apple-system, sans-serif" }}
                               >
                                 {displayPostAuthor}
-                              </span>
-                              <span
-                                className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-sky-500/20 text-sky-400"
-                                title="Verified CHIXUS Node"
-                              >
-                                <CheckCircle2 className="h-3.5 w-3.5 text-sky-400" />
                               </span>
                               {(displayPostBadge || (isMyOwnPost && userHeadline)) ? (
                                 <span
@@ -15193,7 +15448,7 @@ export function App() {
                           </div>
                         </div>
 
-                        {/* Right Action: [You] pill on Mobile + [...] menu on Desktop / Connect for non-official peers */}
+                        {/* Right Action: [You] pill on Mobile + [...] menu on Desktop / Connect for peers */}
                         <div className="flex items-center gap-1.5 shrink-0">
                           {isMyOwnPost && (
                             <button
@@ -15209,7 +15464,7 @@ export function App() {
                             </button>
                           )}
 
-                          {!isMyOwnPost && !isOfficialBroadcast && !isConnectedToUser(displayPostAuthor, post.authorId) && (
+                          {!isMyOwnPost && !isConnectedToUser(displayPostAuthor, post.authorId) && (
                             <button
                               type="button"
                               onClick={() => {
@@ -15224,18 +15479,13 @@ export function App() {
 
                           <button
                             type="button"
+                            id={`post-options-menu-btn-${post.id}`}
                             onClick={(e) => {
                               e.stopPropagation();
-                              if (isMyOwnPost) {
-                                triggerPostContextMenu(post);
-                              } else {
-                                if (!requireAuthForAction('feed', 'share_post')) return;
-                                setShareTargetPost(post);
-                                setIsShareDrawerOpen(true);
-                              }
+                              triggerPostContextMenu(post);
                             }}
                             title="Post options"
-                            className={`${isMyOwnPost ? 'hidden lg:inline-flex' : 'inline-flex'} h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800/70 hover:text-white transition-colors cursor-pointer`}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800/70 hover:text-white transition-colors cursor-pointer"
                           >
                             <MoreHorizontal className="h-4 w-4" />
                           </button>
@@ -15243,25 +15493,8 @@ export function App() {
                       </div>
                     )}
 
-                    {/* Official Welcome Broadcast Card vs Regular Post Body */}
-                    {isOfficialBroadcast ? (
-                      <div className="flex flex-col gap-3">
-                        <div>
-                          <h3
-                            className={`text-[15px] font-bold tracking-tight ${
-                              darkModeTheme ? 'text-white' : 'text-slate-900'
-                            }`}
-                            style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-                          >
-                            Welcome to CHIXUS
-                          </h3>
-                          <p className={`mt-1 text-xs leading-relaxed ${darkModeTheme ? 'text-slate-300' : 'text-slate-600'}`}>
-                            Your technical intelligence and diagnostics platform for technicians, engineers and innovators.
-                          </p>
-                        </div>
-                        <OfficialWelcomeBanner onClick={() => setActiveTab('inspect')} />
-                      </div>
-                    ) : safeTrim(post.content) ? (
+                    {/* Post Body */}
+                    {safeTrim(post.content) ? (
                       <div
                         className={`text-[13.5px] leading-relaxed whitespace-pre-wrap ${
                           darkModeTheme ? 'text-slate-100' : 'text-slate-900'
@@ -21693,52 +21926,68 @@ export function App() {
 
         {/* RIGHT COLUMN (340px Qorvex Live Neural Core Panel - Desktop >= 1024px) */}
         <DesktopQorvexPanel
-          contact={activeContact}
-          messages={activeConversation}
+          contact={desktopQorvexContact}
+          messages={desktopQorvexConversation}
           userName={userName}
           userAvatar={avatarUrl}
-          newChatText={newChatText}
-          onChangeNewChatText={setNewChatText}
-          onSendMessage={handleSendMessage}
+          newChatText={desktopQorvexText}
+          onChangeNewChatText={setDesktopQorvexText}
+          onSendMessage={(e) => {
+            void handleSendMessage(e, undefined, CHIXUS_AI_BOT_ID, desktopQorvexText);
+          }}
+          onQuickPrompt={(prompt) => {
+            void handleSendMessage(
+              { preventDefault: () => {} } as React.FormEvent,
+              prompt,
+              CHIXUS_AI_BOT_ID
+            );
+          }}
           onBackToMessages={() => {
             sound.playClick();
+            setActiveContactId(CHIXUS_AI_BOT_ID);
             setActiveTab('messages');
-            setIsChatOpen(false);
+            setIsChatOpen(true);
           }}
           onOpenProfile={() => {
             sound.playClick();
-            if (
-              activeContact.id === CHIXUS_AI_BOT_ID ||
-              activeContact.name === 'Qorvex' ||
-              activeContact.name === 'Qordex' ||
-              activeContact.name === 'CHIXUS AI'
-            ) {
-              openPeerProfile('Qorvex', CHIXUS_AI_BOT_ID);
-            } else {
-              const pNodeId = activeContact.id.startsWith('c-CHI-') ? activeContact.id.slice(2) : undefined;
-              openPeerProfile(activeContact.name, pNodeId);
-            }
+            openPeerProfile('Qorvex', CHIXUS_AI_BOT_ID);
           }}
           isAiTyping={isChixusAiTyping}
-          isAttachMenuOpen={isAttachMenuOpen}
+          thinkingSteps={qorvexThinkingSteps}
+          isAttachMenuOpen={isDesktopQorvexAttachOpen}
           onToggleAttachMenu={() => {
             sound.playClick();
-            setIsAttachMenuOpen((prev) => !prev);
+            setIsDesktopQorvexAttachOpen((prev) => !prev);
           }}
-          onSelectVoiceAttach={handleStartVoiceNoteRecording}
+          onCloseAttachMenu={() => setIsDesktopQorvexAttachOpen(false)}
+          onSelectVoiceAttach={() => {
+            setIsDesktopQorvexAttachOpen(false);
+            void handleStartVoiceNoteRecording();
+          }}
           onSelectCameraAttach={() => {
-            setIsAttachMenuOpen(false);
+            setIsDesktopQorvexAttachOpen(false);
             chatFileInputRef.current?.click();
           }}
           onSelectFileAttach={() => {
-            setIsAttachMenuOpen(false);
+            setIsDesktopQorvexAttachOpen(false);
             chatDocInputRef.current?.click();
+          }}
+          isRecordingVoiceNote={isRecordingVoiceNote}
+          voiceNoteRecordingSeconds={voiceNoteRecordingSeconds}
+          onStopVoiceRecording={() => {
+            void handleStopVoiceNoteRecording(false);
+          }}
+          onCancelVoiceRecording={() => {
+            void handleStopVoiceNoteRecording(true);
           }}
           chatImageAttachment={chatImageAttachment}
           chatVoiceNoteAttachment={chatVoiceNoteAttachment}
           chatFileAttachment={chatFileAttachment}
           onClearImageAttachment={() => setChatImageAttachment(null)}
-          onClearVoiceAttachment={() => setChatVoiceNoteAttachment(null)}
+          onClearVoiceAttachment={() => {
+            setChatVoiceNoteAttachment(null);
+            setChatVoiceNoteTranscript('');
+          }}
           onClearFileAttachment={() => setChatFileAttachment(null)}
           speakingChatMsgId={speakingChatMsgId}
           onToggleSpeakMessage={(msgId, text) => {
@@ -21753,6 +22002,68 @@ export function App() {
               const bcp47 = activeTribeDiagnostics.bcp47 || 'en-US';
               speakTribeNarrative(text, bcp47, () => setSpeakingChatMsgId(null));
             }
+          }}
+          onCopyMessage={(msg) => {
+            void handleCopyChatMessage(msg as ChatMessage);
+          }}
+          onPinMessage={(msgId) => handleTogglePinChatMessage(msgId)}
+          onShareMessage={(msg) => {
+            void handleShareChatMessage(msg as ChatMessage);
+          }}
+          onZoomImage={(url) =>
+            setLightboxImage({ url, title: 'Qorvex Chat Image Attachment' })
+          }
+          onReadFileAttachment={async (msg) => {
+            if (!msg.fileAttachment) return;
+            sound.playClick();
+            const fileAtt = msg.fileAttachment;
+            const myOpId =
+              getMyActiveNodeId() ||
+              currentUserProfile?.secretId ||
+              generatedSecretID ||
+              localStorage.getItem('chixus_generated_secret_id') ||
+              '';
+            setIsChixusAiTyping(true);
+            triggerToast(`📖 Qorvex is reading inside ${fileAtt.name}...`);
+            const aiReading = await generateSmartChixusAiReply(
+              `Please read everything that is inside this file (${fileAtt.name}), show the actual text/contents inside it, and explain it clearly.`,
+              userName,
+              myOpId,
+              [],
+              buildLiveAppContext(),
+              null,
+              {
+                name: fileAtt.name,
+                size: fileAtt.size ?? 0,
+                type: fileAtt.type,
+                content: fileAtt.content,
+                dataUrl: fileAtt.dataUrl,
+              },
+              null
+            );
+            setIsChixusAiTyping(false);
+            const cleanedReading = cleanAiMessageText(aiReading);
+            const readMsgId = `reply-file-read-${Date.now()}`;
+            const readReplyMsg: ChatMessage = {
+              id: readMsgId,
+              contactId: CHIXUS_AI_BOT_ID,
+              sender: 'them',
+              text: cleanedReading,
+              timestamp: new Date().toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+              }),
+            };
+            if (isGuestMode) {
+              setGuestQorvexMessages((prev) => [...prev, readReplyMsg]);
+            } else {
+              setChatMessages((prev) => [...prev, readReplyMsg]);
+            }
+            stopTribeVoice();
+            setSpeakingPostId(null);
+            setSpeakingChatMsgId(readMsgId);
+            const bcp47 = activeTribeDiagnostics.bcp47 || 'en-US';
+            speakTribeNarrative(cleanedReading, bcp47, () => setSpeakingChatMsgId(null));
           }}
           scrollRef={desktopChatScrollRef}
         />
@@ -23284,7 +23595,7 @@ export function App() {
                           setNotifications((prev) =>
                             prev.map((item) => (item.id === n.id ? { ...item, read: true } : item))
                           );
-                          if (n.senderName || n.senderId) {
+                          if (n.senderId && n.senderId !== 'SYSTEM' && n.senderId !== 'CHIXUS') {
                             setIsNotificationsModalOpen(false);
                             openPeerProfile(
                               n.senderName || n.senderId || 'Operator',
@@ -23384,7 +23695,7 @@ export function App() {
                           {n.message}
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px', flexWrap: 'wrap', marginTop: '2px' }}>
-                          {(n.senderName || n.senderId) ? (
+                          {n.senderId && n.senderId !== 'SYSTEM' && n.senderId !== 'CHIXUS' ? (
                             <div
                               style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}
                               onClick={(e) => e.stopPropagation()}
@@ -27635,7 +27946,7 @@ export function App() {
           </div>
         )}
 
-        {/* Internal & External Share Sheet Modal */}
+        {/* Clean Share Sheet Modal (Direct Message & Device Share Only) */}
         {isShareDrawerOpen && shareTargetPost && (
           <div
             style={{
@@ -27662,16 +27973,14 @@ export function App() {
                 flexDirection: 'column',
                 gap: '14px',
                 boxSizing: 'border-box',
-                maxHeight: '88vh',
+                maxHeight: '85vh',
                 overflowY: 'auto'
               }}
               onClick={(e) => e.stopPropagation()}
             >
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <div>
-                  <div style={{ fontSize: '13px', fontWeight: 900, fontFamily: 'monospace', color: darkModeTheme ? '#ffffff' : '#0f172a' }}>
-                    SHARE TELEMETRY POST
-                  </div>
+                <div style={{ fontSize: '13px', fontWeight: 900, fontFamily: 'monospace', color: darkModeTheme ? '#ffffff' : '#0f172a' }}>
+                  SHARE POST
                 </div>
                 <button
                   type="button"
@@ -27682,160 +27991,7 @@ export function App() {
                 </button>
               </div>
 
-              {/* Tamper-Proof Reshare Card Preview */}
-              <div
-                style={{
-                  padding: '12px',
-                  borderRadius: '12px',
-                  background: darkModeTheme ? '#090d16' : '#f8fafc',
-                  border: '1.5px solid rgba(56, 189, 248, 0.4)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '10px'
-                }}
-              >
-                {/* Resharer (You) Header */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <img
-                    src={avatarUrl}
-                    alt={userName}
-                    style={{ width: '30px', height: '30px', borderRadius: '50%', objectFit: 'cover', border: '1.5px solid #38bdf8' }}
-                  />
-                  <div>
-                    <div style={{ fontSize: '11px', fontWeight: 900, fontFamily: 'monospace', color: darkModeTheme ? '#ffffff' : '#0f172a' }}>
-                      {userName} <span style={{ color: '#38bdf8', fontWeight: 'normal' }}>(You)</span>
-                    </div>
-                    <div style={{ fontSize: '9px', fontFamily: 'monospace', color: '#38bdf8' }}>
-                      🔁 {isPostOwnedByCurrentUser(shareTargetPost) ? 'Resharing your own post' : `Resharing ${shareTargetPost.author}'s post`}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Embedded Original Post Card */}
-                <div
-                  style={{
-                    padding: '10px',
-                    borderRadius: '10px',
-                    background: darkModeTheme ? '#111622' : '#ffffff',
-                    border: darkModeTheme ? '1px solid #283248' : '1px solid #cbd5e1',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '6px'
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <img
-                        src={
-                          isPostOwnedByCurrentUser(shareTargetPost)
-                            ? avatarUrl
-                            : (shareTargetPost.resharedPost ? shareTargetPost.resharedPost.avatar : shareTargetPost.avatar) || avatarUrl
-                        }
-                        alt={isPostOwnedByCurrentUser(shareTargetPost) ? userName : shareTargetPost.author}
-                        style={{ width: '22px', height: '22px', borderRadius: '50%', objectFit: 'cover', border: '1px solid #38bdf8' }}
-                      />
-                      <span style={{ fontSize: '11px', fontWeight: 'bold', fontFamily: 'monospace', color: '#38bdf8' }}>
-                        {isPostOwnedByCurrentUser(shareTargetPost)
-                          ? userName
-                          : shareTargetPost.resharedPost
-                            ? shareTargetPost.resharedPost.author
-                            : shareTargetPost.author}
-                      </span>
-                    </div>
-                    <span style={{ fontSize: '9px', fontFamily: 'monospace', color: '#64748b' }}>
-                      {formatRelativeTime(shareTargetPost, nowTick)}
-                    </span>
-                  </div>
-                  <div
-                    style={{
-                      fontSize: '11px',
-                      fontFamily: 'monospace',
-                      color: darkModeTheme ? '#cbd5e1' : '#334155',
-                      display: '-webkit-box',
-                      WebkitLineClamp: 3,
-                      WebkitBoxOrient: 'vertical',
-                      overflow: 'hidden'
-                    }}
-                  >
-                    {shareTargetPost.resharedPost ? shareTargetPost.resharedPost.content : shareTargetPost.content}
-                  </div>
-                </div>
-              </div>
-
-              {/* 1. LINKEDIN-STYLE REPOST TO CHIXUS FEED */}
-              <div
-                style={{
-                  padding: '12px',
-                  borderRadius: '12px',
-                  background: darkModeTheme ? 'rgba(56, 189, 248, 0.08)' : '#f0f9ff',
-                  border: '1px solid rgba(56, 189, 248, 0.35)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '8px'
-                }}
-              >
-                <div style={{ fontSize: '11px', fontWeight: 900, fontFamily: 'monospace', color: '#38bdf8' }}>
-                  1. REPOST TO CHIXUS FEED
-                </div>
-                <input
-                  type="text"
-                  value={shareFeedComment}
-                  onChange={(e) => setShareFeedComment(e.target.value)}
-                  placeholder="Add your thoughts above the reposted card..."
-                  style={{
-                    width: '100%',
-                    padding: '9px 10px',
-                    borderRadius: '8px',
-                    background: darkModeTheme ? '#090d16' : '#ffffff',
-                    border: darkModeTheme ? '1px solid #334155' : '1px solid #cbd5e1',
-                    color: darkModeTheme ? '#ffffff' : '#0f172a',
-                    fontSize: '11px',
-                    fontFamily: 'monospace',
-                    boxSizing: 'border-box',
-                    outline: 'none'
-                  }}
-                />
-                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                  <button
-                    type="button"
-                    onClick={() => handleShareToInternalFeed(shareTargetPost)}
-                    style={{
-                      flex: 1,
-                      padding: '10px',
-                      borderRadius: '8px',
-                      background: 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
-                      border: '1px solid #38bdf8',
-                      color: '#ffffff',
-                      fontSize: '11px',
-                      fontFamily: 'monospace',
-                      fontWeight: 900,
-                      cursor: 'pointer'
-                    }}
-                  >
-                    ✍️ Repost with your thoughts
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleShareToInternalFeed(shareTargetPost, '')}
-                    style={{
-                      flex: 1,
-                      padding: '10px',
-                      borderRadius: '8px',
-                      background: darkModeTheme ? '#1e293b' : '#ffffff',
-                      border: '1px solid #38bdf8',
-                      color: '#38bdf8',
-                      fontSize: '11px',
-                      fontFamily: 'monospace',
-                      fontWeight: 900,
-                      cursor: 'pointer'
-                    }}
-                  >
-                    🔁 Instant Repost
-                  </button>
-                </div>
-              </div>
-
-              {/* 2. INTERNAL APP SHARE: SEND TO OPERATOR IN CHIXUS MESSAGES */}
+              {/* SEND TO OPERATOR IN CHIXUS MESSAGES */}
               <div
                 style={{
                   padding: '12px',
@@ -27848,7 +28004,7 @@ export function App() {
                 }}
               >
                 <div style={{ fontSize: '11px', fontWeight: 900, fontFamily: 'monospace', color: darkModeTheme ? '#7dd3fc' : '#0369a1' }}>
-                  2. SEND TO OPERATOR IN CHIXUS MESSAGES
+                  SEND TO OPERATOR IN CHIXUS MESSAGES
                 </div>
                 {contacts.length > 0 && (
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
@@ -27909,143 +28065,185 @@ export function App() {
                       whiteSpace: 'nowrap'
                     }}
                   >
-                    Send in App 💬
+                    Send 💬
                   </button>
                 </div>
               </div>
 
-              {/* 3. EDUCATE & READ / DEVICE SHARE / EDIT POST / DELETE POST */}
-              <div
+              {/* DEVICE SHARE / COPY LINK */}
+              <button
+                type="button"
+                onClick={async () => {
+                  sound.playClick();
+                  const shareUrl = window.location.origin;
+                  const shareText = `⚡ CHIXUS Post by ${shareTargetPost.author}:\n"${shareTargetPost.content}"\n${shareUrl}`;
+                  try {
+                    if (navigator.clipboard) {
+                      await navigator.clipboard.writeText(shareText);
+                    }
+                  } catch {}
+                  if (typeof navigator !== 'undefined' && navigator.share) {
+                    try {
+                      await navigator.share({
+                        title: `CHIXUS Post by ${shareTargetPost.author}`,
+                        text: shareTargetPost.content,
+                        url: shareUrl
+                      });
+                    } catch {}
+                  }
+                  setIsShareDrawerOpen(false);
+                  triggerToast('⚡ Shared via Device Share!');
+                }}
                 style={{
-                  display: 'grid',
-                  gridTemplateColumns: isPostOwnedByCurrentUser(shareTargetPost) ? 'repeat(2, 1fr)' : 'repeat(2, 1fr)',
-                  gap: '8px'
+                  width: '100%',
+                  padding: '11px 12px',
+                  borderRadius: '10px',
+                  background: darkModeTheme ? '#161b26' : '#f1f5f9',
+                  border: darkModeTheme ? '1px solid rgba(203, 213, 225, 0.22)' : '1px solid #cbd5e1',
+                  color: darkModeTheme ? '#ffffff' : '#0f172a',
+                  fontSize: '11.5px',
+                  fontFamily: 'monospace',
+                  fontWeight: 'bold',
+                  cursor: 'pointer'
                 }}
               >
+                Share via Device / Copy Text
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Focused Repost Choice Modal (Opened when tapping Repost inside (...) menu) */}
+        {repostTargetPost && (
+          <div
+            id="repost-choice-modal"
+            style={{
+              position: 'fixed',
+              inset: 0,
+              zIndex: 10045,
+              backgroundColor: 'rgba(4, 7, 14, 0.84)',
+              backdropFilter: 'blur(6px)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '16px'
+            }}
+            onClick={() => setRepostTargetPost(null)}
+          >
+            <div
+              style={{
+                width: '100%',
+                maxWidth: '440px',
+                background: darkModeTheme ? '#0f172a' : '#ffffff',
+                border: '1.5px solid #38bdf8',
+                borderRadius: '16px',
+                padding: '18px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '14px',
+                boxShadow: '0 20px 50px rgba(0, 0, 0, 0.9)'
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ fontSize: '13px', fontWeight: 900, fontFamily: 'monospace', color: darkModeTheme ? '#ffffff' : '#0f172a' }}>
+                  REPOST TO CHIXUS FEED
+                </div>
                 <button
                   type="button"
-                  onClick={async () => {
-                    sound.playClick();
-                    const target = shareTargetPost;
-                    setIsShareDrawerOpen(false);
-                    await handleEducateAndReadPost(target);
-                  }}
+                  onClick={() => setRepostTargetPost(null)}
+                  style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer' }}
+                >
+                  <X style={{ width: '18px', height: '18px' }} />
+                </button>
+              </div>
+
+              <div
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: '10px',
+                  background: darkModeTheme ? '#090d16' : '#f8fafc',
+                  border: darkModeTheme ? '1px solid #283248' : '1px solid #cbd5e1',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '6px'
+                }}
+              >
+                <div style={{ fontSize: '11px', fontWeight: 'bold', fontFamily: 'monospace', color: '#38bdf8' }}>
+                  {repostTargetPost.resharedPost ? repostTargetPost.resharedPost.author : repostTargetPost.author}
+                </div>
+                <div
                   style={{
-                    padding: '10px 8px',
-                    borderRadius: '8px',
-                    background: darkModeTheme ? 'rgba(56, 189, 248, 0.14)' : '#e0f2fe',
+                    fontSize: '11.5px',
+                    color: darkModeTheme ? '#cbd5e1' : '#334155',
+                    display: '-webkit-box',
+                    WebkitLineClamp: 3,
+                    WebkitBoxOrient: 'vertical',
+                    overflow: 'hidden'
+                  }}
+                >
+                  {repostTargetPost.resharedPost ? repostTargetPost.resharedPost.content : repostTargetPost.content}
+                </div>
+              </div>
+
+              <textarea
+                rows={3}
+                value={shareFeedComment}
+                onChange={(e) => setShareFeedComment(e.target.value)}
+                placeholder="Add your thoughts above the reposted card..."
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  borderRadius: '10px',
+                  background: darkModeTheme ? '#090d16' : '#ffffff',
+                  border: darkModeTheme ? '1px solid #334155' : '1px solid #cbd5e1',
+                  color: darkModeTheme ? '#ffffff' : '#0f172a',
+                  fontSize: '12px',
+                  boxSizing: 'border-box',
+                  outline: 'none',
+                  resize: 'vertical'
+                }}
+              />
+
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  id="repost-with-thoughts-btn"
+                  onClick={() => handleShareToInternalFeed(repostTargetPost)}
+                  style={{
+                    flex: 1,
+                    padding: '11px 12px',
+                    borderRadius: '10px',
+                    background: 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
                     border: '1px solid #38bdf8',
-                    color: darkModeTheme ? '#38bdf8' : '#0284c7',
-                    fontSize: '11px',
+                    color: '#ffffff',
+                    fontSize: '11.5px',
                     fontFamily: 'monospace',
-                    fontWeight: 'bold',
+                    fontWeight: 900,
                     cursor: 'pointer'
                   }}
                 >
-                  Educate & Read
+                  Repost with your thoughts
                 </button>
-
                 <button
                   type="button"
-                  onClick={async () => {
-                    sound.playClick();
-                    const shareUrl = window.location.origin;
-                    const shareText = `⚡ CHIXUS Post by ${shareTargetPost.author}:\n"${shareTargetPost.content}"\n${shareUrl}`;
-                    try {
-                      if (navigator.clipboard) {
-                        await navigator.clipboard.writeText(shareText);
-                      }
-                    } catch {}
-                    if (typeof navigator !== 'undefined' && navigator.share) {
-                      try {
-                        await navigator.share({
-                          title: `CHIXUS Post by ${shareTargetPost.author}`,
-                          text: shareTargetPost.content,
-                          url: shareUrl
-                        });
-                      } catch {}
-                    }
-                    setIsShareDrawerOpen(false);
-                    triggerToast('⚡ Shared via Device Share!');
-                  }}
+                  id="instant-repost-btn"
+                  onClick={() => handleShareToInternalFeed(repostTargetPost, '')}
                   style={{
-                    padding: '10px 8px',
-                    borderRadius: '8px',
-                    background: darkModeTheme ? '#161b26' : '#f1f5f9',
-                    border: darkModeTheme ? '1px solid rgba(203, 213, 225, 0.22)' : '1px solid #cbd5e1',
-                    color: darkModeTheme ? '#ffffff' : '#0f172a',
-                    fontSize: '11px',
+                    flex: 1,
+                    padding: '11px 12px',
+                    borderRadius: '10px',
+                    background: darkModeTheme ? '#1e293b' : '#ffffff',
+                    border: '1px solid #38bdf8',
+                    color: '#38bdf8',
+                    fontSize: '11.5px',
                     fontFamily: 'monospace',
-                    fontWeight: 'bold',
+                    fontWeight: 900,
                     cursor: 'pointer'
                   }}
                 >
-                  Device Share
+                  Instant Repost
                 </button>
-
-                {isPostOwnedByCurrentUser(shareTargetPost) && (
-                  <>
-                    <button
-                      type="button"
-                      id="share-sheet-edit-post-btn"
-                      onClick={() => {
-                        sound.playClick();
-                        const target = shareTargetPost;
-                        setIsShareDrawerOpen(false);
-                        setEditingPostTarget(target);
-                        setEditingPostContent(target.content || '');
-                      }}
-                      style={{
-                        padding: '10px 8px',
-                        borderRadius: '8px',
-                        background: darkModeTheme ? 'rgba(203, 213, 225, 0.1)' : '#f8fafc',
-                        border: darkModeTheme ? '1px solid rgba(203, 213, 225, 0.35)' : '1px solid #94a3b8',
-                        color: darkModeTheme ? '#f8fafc' : '#0f172a',
-                        fontSize: '11px',
-                        fontFamily: 'monospace',
-                        fontWeight: 900,
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        gap: '6px'
-                      }}
-                    >
-                      <Edit3 style={{ width: '13px', height: '13px', color: '#38bdf8' }} />
-                      <span>Edit Post</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      id="share-sheet-delete-post-btn"
-                      onClick={() => {
-                        sound.playClick();
-                        const target = shareTargetPost;
-                        setIsShareDrawerOpen(false);
-                        setContextMenuPost(target);
-                        setConfirmDeletePost(true);
-                      }}
-                      style={{
-                        padding: '10px 8px',
-                        borderRadius: '8px',
-                        background: 'rgba(239, 68, 68, 0.14)',
-                        border: '1px solid #ef4444',
-                        color: '#ef4444',
-                        fontSize: '11px',
-                        fontFamily: 'monospace',
-                        fontWeight: 900,
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        gap: '6px'
-                      }}
-                    >
-                      <Trash2 style={{ width: '13px', height: '13px' }} />
-                      <span>Delete Post</span>
-                    </button>
-                  </>
-                )}
               </div>
             </div>
           </div>
@@ -28165,9 +28363,10 @@ export function App() {
           </div>
         )}
 
-        {/* 5-Second Hold Own Post Action Menu ("Delete Post" -> "Are you sure?" Cancel / Proceed) */}
+        {/* Post (...) Options Menu: Edit Post, Delete Post, Educate & Read, Repost */}
         {contextMenuPost && (
           <div
+            id="post-options-menu-modal"
             style={{
               position: 'fixed',
               inset: 0,
@@ -28189,47 +28388,154 @@ export function App() {
                 width: '100%',
                 maxWidth: '360px',
                 background: darkModeTheme ? '#0f172a' : '#ffffff',
-                border: '1.5px solid #ef4444',
-                borderRadius: '14px',
+                border: confirmDeletePost ? '1.5px solid #ef4444' : '1.5px solid rgba(56, 189, 248, 0.5)',
+                borderRadius: '16px',
                 padding: '18px',
                 display: 'flex',
                 flexDirection: 'column',
-                gap: '14px',
+                gap: '10px',
                 boxShadow: '0 20px 50px rgba(0, 0, 0, 0.9)'
               }}
               onClick={(e) => e.stopPropagation()}
             >
               {!confirmDeletePost ? (
                 <>
-                  <div style={{ fontSize: '13px', fontWeight: 900, fontFamily: 'monospace', color: darkModeTheme ? '#ffffff' : '#0f172a' }}>
-                    POST OPTIONS
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '2px' }}>
+                    <span style={{ fontSize: '13px', fontWeight: 900, fontFamily: 'monospace', color: darkModeTheme ? '#ffffff' : '#0f172a' }}>
+                      POST OPTIONS
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setContextMenuPost(null);
+                        setConfirmDeletePost(false);
+                      }}
+                      style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer' }}
+                    >
+                      <X style={{ width: '16px', height: '16px' }} />
+                    </button>
                   </div>
+
+                  {isPostOwnedByCurrentUser(contextMenuPost) && (
+                    <>
+                      <button
+                        type="button"
+                        id="post-menu-edit-btn"
+                        onClick={() => {
+                          sound.playClick();
+                          const target = contextMenuPost;
+                          setContextMenuPost(null);
+                          setEditingPostTarget(target);
+                          setEditingPostContent(target.content || '');
+                        }}
+                        style={{
+                          width: '100%',
+                          padding: '11px 14px',
+                          borderRadius: '10px',
+                          background: darkModeTheme ? 'rgba(203, 213, 225, 0.08)' : '#f8fafc',
+                          border: darkModeTheme ? '1px solid rgba(203, 213, 225, 0.25)' : '1px solid #cbd5e1',
+                          color: darkModeTheme ? '#f8fafc' : '#0f172a',
+                          fontSize: '12px',
+                          fontFamily: 'monospace',
+                          fontWeight: 800,
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '10px'
+                        }}
+                      >
+                        <Edit3 style={{ width: '15px', height: '15px', color: '#38bdf8' }} />
+                        <span>Edit Post</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        id="post-menu-delete-btn"
+                        onClick={() => {
+                          sound.playClick();
+                          setConfirmDeletePost(true);
+                        }}
+                        style={{
+                          width: '100%',
+                          padding: '11px 14px',
+                          borderRadius: '10px',
+                          background: 'rgba(239, 68, 68, 0.12)',
+                          border: '1px solid rgba(239, 68, 68, 0.5)',
+                          color: '#f87171',
+                          fontSize: '12px',
+                          fontFamily: 'monospace',
+                          fontWeight: 800,
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '10px'
+                        }}
+                      >
+                        <Trash2 style={{ width: '15px', height: '15px' }} />
+                        <span>Delete Post</span>
+                      </button>
+                    </>
+                  )}
+
                   <button
                     type="button"
-                    onClick={() => {
+                    id="post-menu-educate-read-btn"
+                    onClick={async () => {
                       sound.playClick();
-                      setConfirmDeletePost(true);
+                      const target = contextMenuPost;
+                      setContextMenuPost(null);
+                      await handleEducateAndReadPost(target);
                     }}
                     style={{
                       width: '100%',
                       padding: '11px 14px',
-                      borderRadius: '8px',
-                      background: 'rgba(239, 68, 68, 0.16)',
-                      border: '1px solid #ef4444',
-                      color: '#ef4444',
+                      borderRadius: '10px',
+                      background: darkModeTheme ? 'rgba(56, 189, 248, 0.12)' : '#e0f2fe',
+                      border: '1px solid rgba(56, 189, 248, 0.45)',
+                      color: darkModeTheme ? '#7dd3fc' : '#0284c7',
                       fontSize: '12px',
                       fontFamily: 'monospace',
-                      fontWeight: 900,
+                      fontWeight: 800,
                       cursor: 'pointer',
                       display: 'flex',
                       alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: '8px'
+                      gap: '10px'
                     }}
                   >
-                    <Trash2 style={{ width: '15px', height: '15px' }} />
-                    <span>Delete Post</span>
+                    <Volume2 style={{ width: '15px', height: '15px' }} />
+                    <span>Educate and Read</span>
                   </button>
+
+                  <button
+                    type="button"
+                    id="post-menu-repost-btn"
+                    onClick={() => {
+                      sound.playClick();
+                      if (!requireAuthForAction('feed', 'share_post')) return;
+                      const target = contextMenuPost;
+                      setContextMenuPost(null);
+                      setRepostTargetPost(target);
+                    }}
+                    style={{
+                      width: '100%',
+                      padding: '11px 14px',
+                      borderRadius: '10px',
+                      background: darkModeTheme ? 'rgba(45, 212, 191, 0.12)' : '#f0fdfa',
+                      border: '1px solid rgba(45, 212, 191, 0.45)',
+                      color: darkModeTheme ? '#5eead4' : '#0f766e',
+                      fontSize: '12px',
+                      fontFamily: 'monospace',
+                      fontWeight: 800,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '10px'
+                    }}
+                  >
+                    <Repeat2 style={{ width: '15px', height: '15px' }} />
+                    <span>Repost</span>
+                  </button>
+
                   <button
                     type="button"
                     onClick={() => {
@@ -28239,7 +28545,8 @@ export function App() {
                     style={{
                       width: '100%',
                       padding: '9px 14px',
-                      borderRadius: '8px',
+                      marginTop: '2px',
+                      borderRadius: '10px',
                       background: darkModeTheme ? '#1e293b' : '#f1f5f9',
                       border: 'none',
                       color: darkModeTheme ? '#cbd5e1' : '#475569',

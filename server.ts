@@ -1358,6 +1358,22 @@ Provide:
     country: 'Nigeria',
     avatar: ''
   });
+
+  interface BackendNotification {
+    id: string;
+    to_id: string;
+    to_name: string;
+    from_id: string;
+    from_name: string;
+    from_avatar: string;
+    type: 'welcome' | 'system_welcome' | 'announcement' | 'connection_request' | 'connection_accepted' | 'direct_message' | 'endorsement';
+    title: string;
+    detail: string;
+    created_at: number;
+    read: boolean;
+  }
+
+  const backendNotifications = new Map<string, BackendNotification[]>();
   // ========================================================
   // SYSTEM & SUPPORT EMAIL ARCHITECTURE
   // ========================================================
@@ -1653,8 +1669,65 @@ Provide:
 
       return res.json({ status: 'success', post: newPost });
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Failed to publish post';
-      return res.status(500).json({ status: 'error', error: msg });
+      const msg = err instanceof Error ? err.message : 'Unable to create post';
+      return res.status(500).json({ status: 'error', reason: 'Unable to publish your post right now. Please try again.' });
+    }
+  });
+
+  const handleUpdateServerPost = (req: Request, res: Response) => {
+    try {
+      const targetId = decodeURIComponent(String(req.params.id || '')).trim();
+      const { content } = req.body || {};
+      const cleanContent = String(content || '').trim();
+      const idx = serverPosts.findIndex((p) => String(p.id) === targetId);
+      if (idx !== -1) {
+        serverPosts[idx] = { ...serverPosts[idx], content: cleanContent };
+        return res.json({ status: 'success', post: serverPosts[idx] });
+      }
+      return res.json({ status: 'success', updated: true, id: targetId });
+    } catch {
+      return res.status(500).json({ status: 'error', reason: 'Unable to update post right now.' });
+    }
+  };
+
+  app.put('/api/posts/:id', handleUpdateServerPost);
+  app.patch('/api/posts/:id', handleUpdateServerPost);
+
+  app.delete('/api/posts/:id', (req: Request, res: Response) => {
+    try {
+      const targetId = decodeURIComponent(String(req.params.id || '')).trim();
+      const idx = serverPosts.findIndex((p) => String(p.id) === targetId);
+      if (idx !== -1) {
+        serverPosts.splice(idx, 1);
+      }
+      return res.json({ status: 'success', deleted: true, id: targetId });
+    } catch {
+      return res.status(500).json({ status: 'error', reason: 'Unable to delete post right now.' });
+    }
+  });
+
+  app.post('/api/posts/:id/repost', (req: Request, res: Response) => {
+    try {
+      const originalId = decodeURIComponent(String(req.params.id || '')).trim();
+      const { author_id, author, thoughts, content, image_url } = req.body || {};
+      const cleanAuthorId = String(author_id || '').trim().toUpperCase();
+      const cleanNote = String(thoughts ?? content ?? '').trim();
+      const repostItem: ServerPost = {
+        id: `repost-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
+        author_id: cleanAuthorId || 'OPERATOR',
+        author: String(author || 'Operator').trim(),
+        badge: '',
+        content: cleanNote,
+        image_url: image_url || undefined,
+        verifications: 0,
+        likedByNodeIds: [],
+        createdAt: Date.now(),
+        comments: []
+      };
+      serverPosts.unshift(repostItem);
+      return res.json({ status: 'success', original_post_id: originalId, post: repostItem });
+    } catch {
+      return res.status(500).json({ status: 'error', reason: 'Unable to repost right now.' });
     }
   });
 
@@ -1697,6 +1770,7 @@ Provide:
       };
 
       backendUsers.set(opId.toUpperCase(), newUser);
+      const userNotifications = backendNotifications.get(opId.toUpperCase()) || [];
       console.log(`[CHIXUS REGISTRATION COMPLETE] User ${opId} (${newUser.full_name}) registered in backend.`);
 
       return res.json({
@@ -1704,6 +1778,7 @@ Provide:
         operator_id: opId,
         node_id: opId,
         user: newUser,
+        notifications: userNotifications,
         message: 'Operator account successfully registered and activated.'
       });
     } catch (err: unknown) {
@@ -2167,6 +2242,71 @@ Provide:
   });
 
 
+
+  // Endpoint: Fetch real notifications for an operator (no fake/synthetic items generated)
+  app.get('/api/notifications', (req: Request, res: Response) => {
+    try {
+      const qOpId = String(req.query.operator_id || req.headers['x-operator-id'] || '').trim().toUpperCase();
+      if (!qOpId) {
+        return res.json({ status: 'success', notifications: [] });
+      }
+      const userItems = backendNotifications.get(qOpId) || [];
+      const broadcastItems = backendNotifications.get('*') || [];
+      const items = [...userItems, ...broadcastItems].sort((a, b) => b.created_at - a.created_at);
+      return res.json({
+        status: 'success',
+        operator_id: qOpId,
+        notifications: items
+      });
+    } catch {
+      return res.status(500).json({ status: 'error', reason: 'Unable to sync notifications right now.' });
+    }
+  });
+
+  app.post('/api/notifications', (req: Request, res: Response) => {
+    try {
+      const { to_id, to_name, from_id, from_name, from_avatar, type, title, detail } = req.body || {};
+      const cleanToId = String(to_id || '').trim().toUpperCase();
+      if (!cleanToId || !String(title || '').trim()) {
+        return res.status(400).json({ status: 'error', reason: 'Recipient and notification title are required.' });
+      }
+      const newItem: BackendNotification = {
+        id: `notif-${cleanToId}-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
+        to_id: cleanToId,
+        to_name: String(to_name || '').trim(),
+        from_id: String(from_id || 'SYSTEM').trim(),
+        from_name: String(from_name || 'CHIXUS').trim(),
+        from_avatar: String(from_avatar || '/asset/icon.jpg').trim(),
+        type: String(type || 'welcome').trim(),
+        title: String(title).trim(),
+        detail: String(detail || '').trim(),
+        created_at: Date.now(),
+        read: false
+      };
+      const existing = backendNotifications.get(cleanToId) || [];
+      backendNotifications.set(cleanToId, [newItem, ...existing]);
+      return res.json({ status: 'success', notification: newItem });
+    } catch {
+      return res.status(500).json({ status: 'error', reason: 'Unable to store notification.' });
+    }
+  });
+
+  app.post('/api/notifications/mark-read', (req: Request, res: Response) => {
+    try {
+      const { operator_id, notification_ids } = req.body || {};
+      const cleanId = String(operator_id || '').trim().toUpperCase();
+      const ids = Array.isArray(notification_ids) ? new Set(notification_ids.map(String)) : null;
+      if (cleanId && backendNotifications.has(cleanId)) {
+        const updated = (backendNotifications.get(cleanId) || []).map((n) =>
+          !ids || ids.has(n.id) ? { ...n, read: true } : n
+        );
+        backendNotifications.set(cleanId, updated);
+      }
+      return res.json({ status: 'success' });
+    } catch {
+      return res.json({ status: 'success' });
+    }
+  });
 
   // Endpoint: Settings & Security Notifications Dispatch (Official System: chixus.system@gmail.com)
   app.post('/api/notifications/dispatch-email', (req: Request, res: Response) => {
