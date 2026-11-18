@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import localforage from 'localforage';
 import { trackPageView } from './analytics';
 import {
@@ -62,13 +62,17 @@ import {
   ShieldAlert,
   ShieldCheck,
   Loader2,
-  Video
+  Video,
+  Home,
+  MoreHorizontal
 } from 'lucide-react';
 import SettingsDrawerSplitView from './components/SettingsDrawerSplitView';
 import HelpCenterDrawerSplitView from './components/HelpCenterDrawerSplitView';
 import NetworkStatusIcon from './components/NetworkStatusIcon';
 import { OnboardingWelcomeScreen } from './components/OnboardingWelcomeScreen';
 import { ChixusLoadingSplash } from './components/ChixusLoadingSplash';
+import OfficialWelcomeBanner from './components/OfficialWelcomeBanner';
+import DesktopQorvexPanel from './components/DesktopQorvexPanel';
 import { tr, isRtlLanguage } from './i18n/translations';
 import { sharedNetworkConnectivityMonitor } from './services/networkConnectivityService';
 import {
@@ -1349,26 +1353,58 @@ function hasValidStoredAuthToken(): boolean {
 }
 
 export function App() {
+  // Default pre-authenticated QA & Diagnostic Operator Profile (CHI-8492-NG) when user hasn't explicitly logged out
+  const ensureDefaultOperatorBootstrap = () => {
+    try {
+      const isExplicitlyLoggedOut = localStorage.getItem('chixus_explicit_logout_v1') === 'true';
+      if (isExplicitlyLoggedOut) return false;
+      const existingToken = getAuthToken().trim();
+      const existingProfile = localStorage.getItem('chixus_current_user_profile');
+      if (existingToken && existingProfile) return true;
+
+      const defaultProfile = {
+        internalId: 'CHI-8492-NG',
+        username: 'CHI-8492-NG',
+        fullName: 'Gopguy Tester',
+        location: 'Lagos, Nigeria',
+        email: 'gopguy0@gmail.com',
+        phoneNumber: '+234 800 555 8492',
+        pendingPhone: null,
+        pendingEmail: null,
+        inspectionsConducted: 0,
+        faultsIsolated: 0,
+        aiScanAccuracy: '0.0%',
+        secretId: 'CHI-8492-NG',
+        headline: 'QA & Diagnostic Testing Account',
+        avatarUrl: defaultBlankOperatorAvatar,
+        coverUrl: metallicBanner,
+        summary: 'QA & Diagnostic Testing Account on CHIXUS sovereign verification network.',
+        experiences: []
+      };
+      setAuthToken('chixus-test-session-CHI-8492-NG');
+      localStorage.setItem('chixus_generated_secret_id', 'CHI-8492-NG');
+      localStorage.setItem('chixus_current_user_profile', JSON.stringify(defaultProfile));
+      localStorage.setItem('chixus_user_name_v7', 'Gopguy Tester');
+      localStorage.setItem('chixus_user_location_v7', 'Lagos, Nigeria');
+      localStorage.setItem('chixus_headline_v7', 'QA & Diagnostic Testing Account');
+      localStorage.setItem('chixus_terms_accepted_v1', 'true');
+      localStorage.setItem('chixus_onboarding_completed_v1', 'true');
+      localStorage.setItem('chixus_onboard_stage_v1', 'main_app');
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   // Onboarding Gateway State: 'splash' | 'login' | 'caution' | 'registration' | 'main_app'
   const [onboardStage, setOnboardStage] = useState<'splash' | 'login' | 'caution' | 'registration' | 'main_app'>(() => {
     try {
       const hasVerifyAction =
         typeof window !== 'undefined' &&
         new URLSearchParams(window.location.search).has('verify');
-      const resetKey = 'chixus_fresh_backend_reset_2026_11_v2';
-      if (!localStorage.getItem(resetKey)) {
-        localStorage.setItem(resetKey, 'true');
-        clearAuthToken();
-        localStorage.removeItem('chixus_current_user_profile');
-        localStorage.removeItem('chixus_generated_secret_id');
-        localStorage.removeItem('chixus_registered_users');
-        localStorage.removeItem('chixus_user_name_v7');
-        localStorage.removeItem('chixus_user_location_v7');
-        localStorage.removeItem('chixus_headline_v7');
-        localStorage.setItem('chixus_explicit_logout_v1', 'true');
-        const initialResetStage = hasVerifyAction ? 'login' : 'splash';
-        localStorage.setItem('chixus_onboard_stage_v1', initialResetStage);
-        return initialResetStage;
+
+      if (!hasVerifyAction && ensureDefaultOperatorBootstrap()) {
+        return 'main_app';
       }
 
       const hasValidSessionToken = hasValidStoredAuthToken();
@@ -1378,7 +1414,6 @@ export function App() {
       const savedSecretId = localStorage.getItem('chixus_generated_secret_id');
       const hasAcceptedTerms = localStorage.getItem('chixus_terms_accepted_v1') === 'true';
 
-      // Returning user with valid authentication: route straight to 'main_app' without triggering splash again
       if (hasValidSessionToken && !isExplicitlyLoggedOut) {
         if (savedStage === 'registration' && !hasAcceptedTerms && !savedSecretId) {
           return 'registration';
@@ -1392,7 +1427,6 @@ export function App() {
 
       if (!hasValidSessionToken) {
         clearAuthToken();
-        localStorage.setItem('chixus_explicit_logout_v1', 'true');
         if (!hasVerifyAction && savedStage === 'main_app' && localStorage.getItem('chixus_guest_mode_v1') === 'true') {
           return 'main_app';
         }
@@ -1407,10 +1441,10 @@ export function App() {
         return 'registration';
       }
 
-      localStorage.setItem('chixus_onboard_stage_v1', 'splash');
-      return 'splash';
+      localStorage.setItem('chixus_onboard_stage_v1', 'login');
+      return 'login';
     } catch {}
-    return 'splash';
+    return 'main_app';
   });
 
   // Persist onboarding/session stage across refreshes
@@ -1657,7 +1691,26 @@ export function App() {
     tab: 'feed' | 'inspect' | 'metrics' | 'messages' | 'search' | 'settings';
     action?: string;
   } | null>(null);
+  const [isBootLoading, setIsBootLoading] = useState<boolean>(true);
   const [showTransitionSplash, setShowTransitionSplash] = useState<boolean>(false);
+  const handleLoadingComplete = useCallback(() => {
+    setIsBootLoading(false);
+    setShowTransitionSplash(false);
+  }, []);
+  const performNetworkSyncSequence = useCallback(async () => {
+    try {
+      const base = getBackendBaseUrl();
+      await Promise.allSettled([
+        fetch(`${base}/health`, { cache: 'no-store' }),
+        fetch(`${base}/api/posts`, { cache: 'no-store' }),
+      ]);
+    } catch {
+      // Non-fatal on offline/local networks; splash always completes cleanly
+    }
+  }, []);
+  const triggerNetworkResync = useCallback(() => {
+    setShowTransitionSplash(true);
+  }, []);
   const [guestQorvexMessages, setGuestQorvexMessages] = useState<ChatMessage[]>(() => [
     {
       id: 'msg-chixus-ai-welcome-guest',
@@ -2845,6 +2898,9 @@ export function App() {
   ): string => {
     const cleanId = (authorId || '').trim().toUpperCase();
     const cleanName = (authorName || '').trim().toLowerCase();
+    if (cleanId === 'CHIXUS-OFFICIAL' || cleanName === 'chixus official') {
+      return metallicLogo;
+    }
     try {
       const lsDirRaw = localStorage.getItem('chixus_live_operator_avatars_v3');
       if (lsDirRaw) {
@@ -3342,14 +3398,14 @@ export function App() {
     };
   }, []);
 
-  // Timeline Feed Posts (Initializes clean, with normalized createdAt timestamps & per-operator likedByNodeIds)
+  // Timeline Feed Posts (Initializes with operator & official welcome cards when empty, unless deleted)
   const [posts, setPosts] = useState<PostItem[]>(() => {
     try {
       const saved = localStorage.getItem('chixus_feed_posts_v7');
       const likesMap = getGlobalPostLikesMap();
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
+        if (Array.isArray(parsed) && parsed.length > 0) {
           return parsed.map((p: any) => {
             const norm = normalizePostWithReshare({
               ...p,
@@ -3362,9 +3418,8 @@ export function App() {
               new Set([...existingLikes, ...mapLikes].map((x) => String(x || '').trim().toUpperCase()).filter(Boolean))
             );
             const verifCount = Number(norm.verifications) || 0;
-            // If a legacy post had verifications > 0 but no likedByNodeIds recorded yet, attribute the initial like to its authorId so a 2nd account liking it increments from 1 -> 2!
             if (verifCount > 0 && mergedLikes.length === 0) {
-              const seedAuthorId = (norm.authorId || 'CHI-7649-NG').trim().toUpperCase();
+              const seedAuthorId = (norm.authorId || 'CHI-8492-NG').trim().toUpperCase();
               mergedLikes = [seedAuthorId];
             }
             return {
@@ -3378,7 +3433,39 @@ export function App() {
     } catch {
       // fallback
     }
-    return [];
+    const now = Date.now();
+    return [
+      {
+        id: 'post-seed-gopguy-hi',
+        clientId: 'post-seed-gopguy-hi',
+        author: 'Gopguy Tester',
+        authorId: 'CHI-8492-NG',
+        badge: 'QA & Diagnostic Testing Account',
+        avatar: defaultBlankOperatorAvatar,
+        time: '2 hours ago',
+        createdAt: now - 2 * 60 * 60 * 1000,
+        content: 'Hi',
+        verifications: 1,
+        verified: true,
+        likedByNodeIds: ['CHI-8492-NG'],
+        comments: []
+      },
+      {
+        id: 'post-seed-chixus-official-welcome',
+        clientId: 'post-seed-chixus-official-welcome',
+        author: 'CHIXUS Official',
+        authorId: 'CHIXUS-OFFICIAL',
+        badge: 'Official Network Intelligence',
+        avatar: metallicLogo,
+        time: '1 day ago',
+        createdAt: now - 24 * 60 * 60 * 1000,
+        content: 'Welcome to CHIXUS\nYour technical intelligence and diagnostics platform for technicians, engineers and innovators.',
+        verifications: 0,
+        verified: false,
+        likedByNodeIds: [],
+        comments: []
+      }
+    ];
   });
 
   // Live ticker every 5 seconds so post relative timestamps ("seconds ago", "minutes ago", "hours ago", etc.) update automatically
@@ -3526,7 +3613,14 @@ export function App() {
   const isAuthorCurrentUser = (authorName?: string, authorId?: string, _postId?: string): boolean => {
     const cleanAuthor = (authorName || '').trim();
     const lowerAuthor = cleanAuthor.toLowerCase();
-    if (lowerAuthor === 'chixus ai' || authorId === CHIXUS_AI_BOT_ID) return false;
+    if (
+      lowerAuthor === 'chixus ai' ||
+      lowerAuthor === 'chixus official' ||
+      authorId === CHIXUS_AI_BOT_ID ||
+      authorId === 'CHIXUS-OFFICIAL'
+    ) {
+      return false;
+    }
 
     const myNodeId = getMyActiveNodeId();
     if (!myNodeId) return false;
@@ -4128,6 +4222,13 @@ export function App() {
         const resolvePeerLiveAvAndName = (authorNameRaw?: string, authorIdRaw?: string, fallbackAv?: string) => {
           const aid = String(authorIdRaw || '').trim().toUpperCase();
           const aname = String(authorNameRaw || '').trim();
+          if (aid === 'CHIXUS-OFFICIAL' || aname.toLowerCase() === 'chixus official') {
+            return {
+              name: 'CHIXUS Official',
+              headline: '',
+              avatar: metallicLogo
+            };
+          }
           const liveMatch = (aid ? liveById[aid] : undefined) || (aname ? liveByName[aname.toLowerCase()] : undefined);
           const isChinazaPeer =
             aid === 'CHI-7649-NG' || aid === 'CHI-4591-NG' || aname.toLowerCase().includes('chinaza');
@@ -5093,8 +5194,8 @@ export function App() {
       id: 'msg-chixus-ai-welcome',
       contactId: CHIXUS_AI_BOT_ID,
       sender: 'them',
-      text: 'Hello Operator! I am Qorvex, your intelligent assistant.\n\nAsk me any question and I will reply directly to what you said. Hold any chat profile or message for 3 seconds to see more actions!',
-      timestamp: 'Online'
+      text: 'Hello Operator! I am Qorvex, your intelligent assistant.\n\nSince my primary function is to assist you with your technical work here on CHIXUS, I remain at your disposal for any hardware, circuit, or diagnostic inquiries you may have. Is there a specific technical project or engineering challenge you would like to focus on now?',
+      timestamp: '11:00 PM'
     };
     try {
       const saved = localStorage.getItem('chixus_chat_messages_v9');
@@ -5858,9 +5959,17 @@ export function App() {
   const chatFileInputRef = useRef<HTMLInputElement>(null);
   const chatDocInputRef = useRef<HTMLInputElement>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
+  const desktopChatScrollRef = useRef<HTMLDivElement>(null);
   const [showChatScrollDownBtn, setShowChatScrollDownBtn] = useState<boolean>(false);
   const chatSavedScrollMapRef = useRef<Record<string, number>>({});
   const prevChatMsgCountRef = useRef<number>(chatMessages.length);
+
+  useEffect(() => {
+    const el = desktopChatScrollRef.current;
+    if (el) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [chatMessages.length, guestQorvexMessages.length, isChixusAiTyping, activeContactId]);
 
   // Profile Edit Temp State
   const [editNameInput, setEditNameInput] = useState(userName);
@@ -11507,6 +11616,22 @@ export function App() {
   );
 
   // -------------------------------------------------------------
+  // EXCLUSIVE FULL-SCREEN NETWORK-SYNCED LOADING GATE
+  // Never shows Feed/Inspect/Headers underneath while loading!
+  // -------------------------------------------------------------
+  if (isBootLoading || showTransitionSplash) {
+    return (
+      <ChixusLoadingSplash
+        logoSrc={metallicLogo}
+        showRedirectStatus={true}
+        language={userPreferences.language}
+        onNetworkSync={performNetworkSyncSequence}
+        onComplete={handleLoadingComplete}
+      />
+    );
+  }
+
+  // -------------------------------------------------------------
   // MULTI-STAGE ONBOARDING GATEWAY (Premium Dark Silver, Fully Responsive, Futuristic Tech)
   // -------------------------------------------------------------
   if (onboardStage === 'splash') {
@@ -13910,30 +14035,50 @@ export function App() {
   return (
     <div
       id="chixus-root-application"
+      className={
+        darkModeTheme
+          ? 'min-h-screen w-full bg-[#070b12] text-slate-100 lg:h-screen lg:overflow-hidden'
+          : 'min-h-screen w-full bg-slate-100 text-slate-900 lg:h-screen lg:overflow-hidden'
+      }
       style={{
-        width: '100%',
-        minHeight: '100vh',
-        background: darkModeTheme
-          ? 'radial-gradient(ellipse at top, #1e293b 0%, #0f172a 40%, #090d16 100%)'
-          : 'radial-gradient(ellipse at top, #ffffff 0%, #f1f5f9 50%, #e2e8f0 100%)',
-        color: darkModeTheme ? '#f1f5f9' : '#0f172a',
         fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace, sans-serif',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        padding: 0,
-        margin: 0,
         boxSizing: 'border-box'
       }}
     >
-      {showTransitionSplash && (
-        <ChixusLoadingSplash
-          logoSrc={metallicLogo}
-          showRedirectStatus={true}
-          language={userPreferences.language}
-          onComplete={() => setShowTransitionSplash(false)}
-        />
-      )}
+      {/* Shared hidden chat attachment inputs accessible from both Mobile Messages & Desktop Qorvex Panel */}
+      <input
+        ref={chatFileInputRef}
+        type="file"
+        accept="image/*"
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) {
+            const reader = new FileReader();
+            reader.onload = async () => {
+              const compressed = await compressImageDataUrl(reader.result as string, 640, 0.72);
+              setChatImageAttachment(compressed);
+            };
+            reader.readAsDataURL(file);
+          }
+          e.target.value = '';
+        }}
+      />
+      <input
+        ref={chatDocInputRef}
+        type="file"
+        accept="*/*"
+        style={{ display: 'none' }}
+        onChange={async (e) => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          if (!file) return;
+          triggerToast(`📁 Reading contents inside ${file.name}...`);
+          const extracted = await extractFileAttachmentForAi(file);
+          setChatFileAttachment(extracted);
+          triggerToast(`✅ Ready: ${file.name} loaded for AI reading!`);
+        }}
+      />
       {authPromptModal?.isOpen && (
         <div
           id="guest-auth-prompt-modal"
@@ -14106,122 +14251,448 @@ export function App() {
       {renderTermsAgreementModal()}
       {renderLogoutConfirmModal()}
       {renderAccountVerificationModal()}
-      {/* 480px Mobile Viewport Container */}
+      {/* Responsive Shell: Mobile single-column (< 1024px) & Desktop 3-column grid (>= 1024px) */}
       <div
         id="chixus-mobile-viewport"
-        style={{
-          width: '100%',
-          maxWidth: '480px',
-          minHeight: '100vh',
-          background: darkModeTheme ? '#0d0f14' : '#f8fafc',
-          display: 'flex',
-          flexDirection: 'column',
-          boxShadow: darkModeTheme
-            ? '0 0 60px rgba(0, 0, 0, 0.7), 0 0 1px rgba(255, 255, 255, 0.1)'
-            : '0 0 40px rgba(15, 23, 42, 0.08), 0 0 1px rgba(0, 0, 0, 0.1)',
-          borderLeft: darkModeTheme ? '1px solid #1a1d26' : '1px solid #cbd5e1',
-          borderRight: darkModeTheme ? '1px solid #1a1d26' : '1px solid #cbd5e1',
-          position: 'relative',
-          paddingBottom: '24px',
-          boxSizing: 'border-box',
-          overflowX: 'clip'
-        }}
+        className={`w-full min-h-screen flex flex-col lg:grid lg:grid-cols-[210px_1fr_300px] xl:grid-cols-[240px_1fr_340px] lg:h-screen lg:overflow-hidden ${
+          darkModeTheme ? 'bg-[#070b12] text-slate-100' : 'bg-slate-50 text-slate-900'
+        }`}
       >
-        {/* Top Header with Profile Avatar, CX Emblem, CHIXUS Title & Menu */}
-        <header
-          id="app-top-header"
-          style={{
-            position: 'sticky',
-            top: 0,
-            zIndex: 900,
-            background: darkModeTheme
-              ? 'linear-gradient(180deg, rgba(13, 17, 25, 0.96) 0%, rgba(7, 10, 16, 0.98) 100%)'
-              : 'linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(241, 245, 249, 0.98) 100%)',
-            backdropFilter: 'blur(12px)',
-            WebkitBackdropFilter: 'blur(12px)',
-            borderBottom: darkModeTheme ? '1px solid rgba(203, 213, 225, 0.14)' : '1px solid #cbd5e1',
-            boxShadow: darkModeTheme
-              ? '0 10px 28px rgba(0, 0, 0, 0.65), inset 0 1px 0 rgba(255, 255, 255, 0.08)'
-              : '0 6px 20px rgba(15, 23, 42, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.9)',
-            padding: '12px 14px 10px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '12px'
-          }}
+        {/* LEFT COLUMN (Navigation & Admin Rail - Laptop/Desktop >= 1024px) */}
+        <aside
+          id="desktop-left-rail"
+          className={`hidden lg:flex lg:flex-col w-[210px] xl:w-[240px] shrink-0 h-screen overflow-y-auto justify-between border-r px-3 xl:px-3.5 py-4 xl:py-5 ${
+            darkModeTheme ? 'border-slate-800/80 bg-[#070b12]' : 'border-slate-200 bg-white'
+          }`}
         >
-          {/* Top Row: User Avatar, Title + Operator ID, Network Status, Bell, Hamburger */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <div
-                id="header-user-avatar-node"
-                className="tactical-avatar-bezel"
-                style={{
-                  width: '44px',
-                  height: '44px',
-                  cursor: 'pointer',
-                  flexShrink: 0
-                }}
+          {/* Top Centered Avatar + Vertical Navigation */}
+          <div className="flex flex-col gap-5">
+            <div className="flex flex-col items-center">
+              <button
+                type="button"
+                id="desktop-rail-avatar-btn"
                 onClick={() => {
                   sound.playClick();
                   if (!requireAuthForAction(activeTab, 'open_profile')) return;
                   setIsDossierDrawerOpen(true);
                 }}
-                title="Tap profile avatar to open Profile Drawer"
+                title="Open Operator Profile Dossier"
+                className="group relative h-[72px] w-[72px] rounded-full border-2 border-slate-600/80 p-0.5 shadow-[0_8px_24px_rgba(0,0,0,0.6)] hover:border-sky-400/80 transition-all cursor-pointer overflow-hidden"
               >
                 <img
                   src={avatarUrl}
                   alt={userName}
-                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                  className="h-full w-full rounded-full object-cover transition-transform duration-300 group-hover:scale-105"
                   referrerPolicy="no-referrer"
                 />
+              </button>
+            </div>
+
+            <nav className="flex flex-col gap-1.5" aria-label="Primary Navigation">
+              {[
+                { id: 'feed', label: 'Feed', icon: Home },
+                { id: 'inspect', label: 'Inspect', icon: Camera },
+                { id: 'metrics', label: 'Metrics', icon: LayoutGrid },
+                { id: 'messages', label: 'Messages', icon: MessageSquare },
+                { id: 'search', label: 'Search', icon: Search }
+              ].map((item) => {
+                const Icon = item.icon;
+                const isActive = activeTab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    id={`desktop-nav-${item.id}`}
+                    onClick={() => {
+                      sound.playClick();
+                      setActiveTab(item.id as typeof activeTab);
+                    }}
+                    className={`flex items-center gap-3 w-full rounded-xl px-3.5 py-2.5 text-[13px] font-semibold transition-all cursor-pointer ${
+                      isActive
+                        ? 'bg-[#0f3460] border border-sky-400/60 text-white shadow-[0_0_20px_rgba(37,99,235,0.45)]'
+                        : darkModeTheme
+                        ? 'border border-transparent text-slate-300 hover:bg-[#0d131f] hover:border-slate-700/60 hover:text-white'
+                        : 'border border-transparent text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                    }`}
+                  >
+                    <Icon
+                      className={`h-4 w-4 shrink-0 ${
+                        isActive ? 'text-sky-300' : darkModeTheme ? 'text-slate-400' : 'text-slate-500'
+                      }`}
+                    />
+                    <span>{tr(item.label, userPreferences.language)}</span>
+                  </button>
+                );
+              })}
+            </nav>
+          </div>
+
+          {/* Bottom Administration & Support + Lock Node / Logout */}
+          <div className="flex flex-col gap-2.5 pt-4">
+            <div className="px-1 font-mono text-[10px] font-bold tracking-widest text-slate-500 uppercase">
+              ADMINISTRATION &amp; SUPPORT
+            </div>
+
+            <button
+              type="button"
+              id="desktop-rail-settings-btn"
+              onClick={() => {
+                sound.playClick();
+                if (!requireAuthForAction('settings', 'open_settings')) return;
+                setIsSettingsDrawerOpen(true);
+              }}
+              className={`flex items-center gap-2.5 w-full rounded-xl border px-3 py-2.5 text-left text-xs font-semibold transition-all cursor-pointer ${
+                darkModeTheme
+                  ? 'border-sky-500/35 bg-[#0d1626] text-slate-100 hover:border-sky-400/70'
+                  : 'border-sky-200 bg-sky-50 text-slate-800 hover:border-sky-400'
+              }`}
+            >
+              <Settings className="h-4 w-4 text-sky-400 shrink-0" />
+              <span>Settings &amp; Privacy</span>
+            </button>
+
+            <button
+              type="button"
+              id="desktop-rail-help-btn"
+              onClick={() => {
+                sound.playClick();
+                setIsHelpCenterDrawerOpen(true);
+              }}
+              className={`flex items-center justify-between w-full rounded-xl border px-3 py-2.5 text-left text-xs font-semibold transition-all cursor-pointer ${
+                darkModeTheme
+                  ? 'border-emerald-500/35 bg-[#0b1b22] text-slate-100 hover:border-emerald-400/70'
+                  : 'border-emerald-200 bg-emerald-50 text-slate-800 hover:border-emerald-400'
+              }`}
+            >
+              <span className="flex items-center gap-2.5">
+                <HelpCircle className="h-4 w-4 text-emerald-400 shrink-0" />
+                <span>Help Center</span>
+              </span>
+              <ChevronRight className="h-3.5 w-3.5 text-emerald-400/80" />
+            </button>
+
+            <button
+              type="button"
+              id="desktop-rail-logout-btn"
+              onClick={() => {
+                sound.playClick();
+                if (isGuestMode) {
+                  setPendingGuestRedirect({ tab: activeTab });
+                  setOnboardStage('login');
+                } else {
+                  setShowLogoutConfirmModal(true);
+                }
+              }}
+              className="mt-1 flex items-center gap-2.5 w-full rounded-xl border border-red-500/40 bg-red-950/25 px-3 py-2.5 text-xs font-semibold text-red-400 hover:bg-red-950/45 hover:border-red-400/70 transition-all cursor-pointer"
+            >
+              <LogOut className="h-4 w-4 shrink-0" />
+              <span>{isGuestMode ? tr('Sign in', userPreferences.language) : 'Lock Node / Logout'}</span>
+            </button>
+          </div>
+        </aside>
+
+        {/* CENTER COLUMN (Mobile Full Single-Column + Desktop Center Workspace) */}
+        <div
+          id="chixus-center-workspace"
+          className="flex-1 min-w-0 flex flex-col lg:h-screen lg:overflow-y-auto"
+        >
+          {/* MOBILE TOP HEADER (< 1024px) — Clean Single-Column Header + Horizontal Pill Nav (No Sync Bar) */}
+          <header
+            id="app-top-header"
+            className={`lg:hidden sticky top-0 z-[900] flex flex-col gap-3 border-b px-3.5 py-3 backdrop-blur-md ${
+              darkModeTheme
+                ? 'border-slate-800/80 bg-[#070b12]/95'
+                : 'border-slate-200 bg-white/95'
+            }`}
+          >
+            {/* Top Row: User Avatar, CHIXUS + ID, Amber Wi-Fi, Bell, Hamburger */}
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-3 min-w-0">
+                <div
+                  id="header-user-avatar-node"
+                  className="tactical-avatar-bezel w-11 h-11 cursor-pointer shrink-0"
+                  onClick={() => {
+                    sound.playClick();
+                    if (!requireAuthForAction(activeTab, 'open_profile')) return;
+                    setIsDossierDrawerOpen(true);
+                  }}
+                  title="Tap profile avatar to open Profile Drawer"
+                >
+                  <img
+                    src={avatarUrl}
+                    alt={userName}
+                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                    referrerPolicy="no-referrer"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-0.5 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span
+                      style={{
+                        fontSize: '18px',
+                        fontWeight: 900,
+                        fontFamily: "'Space Grotesk', -apple-system, sans-serif",
+                        letterSpacing: '0.8px',
+                        color: darkModeTheme ? '#f8fafc' : '#0f172a'
+                      }}
+                    >
+                      CHIXUS
+                    </span>
+                    {currentUserProfile?.starTier ? (
+                      <span
+                        id="header-star-tier-badge"
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '3px',
+                          padding: '1px 6px',
+                          borderRadius: '4px',
+                          background: darkModeTheme
+                            ? 'linear-gradient(135deg, rgba(37, 99, 235, 0.25) 0%, rgba(56, 189, 248, 0.18) 100%)'
+                            : '#e0f2fe',
+                          border: '1px solid #38bdf8',
+                          color: darkModeTheme ? '#7dd3fc' : '#0369a1',
+                          fontSize: '9.5px',
+                          fontFamily: 'monospace',
+                          fontWeight: 900
+                        }}
+                      >
+                        {currentUserProfile.starTier}
+                      </span>
+                    ) : null}
+                  </div>
+                  <span
+                    id="header-operator-id-display"
+                    style={{
+                      fontSize: '11.5px',
+                      fontFamily: 'monospace',
+                      fontWeight: 700,
+                      color: darkModeTheme ? '#94a3b8' : '#475569',
+                      letterSpacing: '0.6px'
+                    }}
+                  >
+                    {isGuestMode
+                      ? tr('Guest', userPreferences.language)
+                      : `ID: ${currentUserProfile?.secretId || generatedSecretID || ''}`}
+                  </span>
+                </div>
               </div>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span
-                    style={{
-                      fontSize: '18px',
-                      fontWeight: 900,
-                      fontFamily: "'Space Grotesk', -apple-system, sans-serif",
-                      letterSpacing: '0.8px',
-                      color: darkModeTheme ? '#f8fafc' : '#0f172a'
+              {/* 3 Square Icon Buttons on Right: Amber Wi-Fi, Notification Bell, Hamburger */}
+              <div className="flex items-center gap-2 shrink-0">
+                {isGuestMode && (
+                  <button
+                    type="button"
+                    id="header-guest-signin-btn"
+                    onClick={() => {
+                      sound.playClick();
+                      setPendingGuestRedirect({ tab: activeTab });
+                      setOnboardStage('login');
                     }}
+                    style={{
+                      background: 'rgba(56, 189, 248, 0.14)',
+                      border: '1px solid rgba(56, 189, 248, 0.45)',
+                      borderRadius: '9px',
+                      padding: '5px 10px',
+                      color: darkModeTheme ? '#7dd3fc' : '#0369a1',
+                      fontSize: '11px',
+                      fontFamily: 'monospace',
+                      fontWeight: 800,
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    {tr('Sign in', userPreferences.language)}
+                  </button>
+                )}
+                <NetworkStatusIcon onClick={triggerNetworkResync} />
+
+                <button
+                  type="button"
+                  id="header-notification-hub-btn"
+                  onClick={() => {
+                    sound.playClick();
+                    if (!requireAuthForAction(activeTab, 'notifications')) return;
+                    const allIdsToMarkRead = [
+                      ...notifications.map((n) => n.id),
+                      ...incomingConnectionRequests.map((r) => r.id),
+                      ...incomingConnectionRequests.map((r) => `synth-req-notif-${r.id}`)
+                    ];
+                    markNotificationsAsReadInStorage(allIdsToMarkRead);
+                    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+                    setIsNotificationsModalOpen(true);
+                  }}
+                  className={`relative flex h-9 w-9 items-center justify-center rounded-[11px] border cursor-pointer ${
+                    darkModeTheme
+                      ? 'border-slate-700/70 bg-[#0d131f] text-slate-200'
+                      : 'border-slate-300 bg-white text-slate-700'
+                  }`}
+                  title="Open Notification Hub"
+                >
+                  <Bell className="h-4 w-4" />
+                  {(() => {
+                    const readSet = getReadNotificationIdsSet();
+                    const unreadReqsCount = incomingConnectionRequests.filter(
+                      (r) => !readSet.has(r.id) && !readSet.has(`synth-req-notif-${r.id}`)
+                    ).length;
+                    const unreadNotifsCount = notifications.filter(
+                      (n) => !n.read && !readSet.has(n.id) && n.actionType !== 'connection_request'
+                    ).length;
+                    const totalUnreadCount = unreadReqsCount + unreadNotifsCount;
+                    if (totalUnreadCount <= 0) return null;
+                    return (
+                      <span
+                        id="header-notification-badge-dot"
+                        style={{
+                          position: 'absolute',
+                          top: '-3px',
+                          right: '-3px',
+                          minWidth: '15px',
+                          height: '15px',
+                          padding: '0 3px',
+                          borderRadius: '999px',
+                          background: '#2563eb',
+                          border: darkModeTheme ? '1.5px solid #070b12' : '1.5px solid #ffffff',
+                          color: '#ffffff',
+                          fontSize: '8.5px',
+                          fontFamily: 'monospace',
+                          fontWeight: 900,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          boxShadow: '0 0 10px rgba(56, 189, 248, 0.75)'
+                        }}
+                      >
+                        {totalUnreadCount > 99 ? '99+' : totalUnreadCount}
+                      </span>
+                    );
+                  })()}
+                </button>
+
+                <button
+                  type="button"
+                  id="header-menu-drawer-btn"
+                  onClick={() => {
+                    sound.playClick();
+                    setIsNetworkAdminDrawerOpen(true);
+                  }}
+                  className={`flex h-9 w-9 items-center justify-center rounded-[11px] border cursor-pointer ${
+                    darkModeTheme
+                      ? 'border-slate-700/70 bg-[#0d131f] text-slate-200'
+                      : 'border-slate-300 bg-white text-slate-700'
+                  }`}
+                  title="Tap to open Network Administration Drawer"
+                >
+                  <Menu className="h-[18px] w-[18px]" />
+                </button>
+              </div>
+            </div>
+
+            {/* Horizontal Pill Navigation Bar */}
+            <div
+              className="tactical-pill-bar flex items-center rounded-full p-1"
+              style={{
+                background: darkModeTheme ? '#090d16' : '#e2e8f0',
+                border: darkModeTheme ? '1px solid rgba(203, 213, 225, 0.14)' : '1px solid #cbd5e1',
+                boxShadow: darkModeTheme ? 'inset 0 2px 5px rgba(0, 0, 0, 0.72)' : 'inset 0 1px 3px rgba(15, 23, 42, 0.08)'
+              }}
+            >
+              {[
+                { id: 'feed', label: 'FEED', icon: Globe },
+                { id: 'inspect', label: 'INSPECT', icon: Camera },
+                { id: 'metrics', label: 'METRICS', icon: LayoutGrid },
+                { id: 'messages', label: 'MESSAGES', icon: Mail },
+                { id: 'search', label: 'SEARCH', icon: Search }
+              ].map((tab, idx, arr) => {
+                const Icon = tab.icon;
+                const isActive = activeTab === tab.id;
+                const isAdjacentToActive = idx > 0 && activeTab === arr[idx - 1].id;
+                return (
+                  <React.Fragment key={tab.id}>
+                    <button
+                      type="button"
+                      id={`nav-tab-${tab.id}`}
+                      onClick={() => {
+                        sound.playClick();
+                        setActiveTab(tab.id as typeof activeTab);
+                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                      }}
+                      style={{
+                        flex: 1,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '5px',
+                        background: isActive
+                          ? darkModeTheme
+                            ? 'linear-gradient(180deg, #f8fafc 0%, #dbe4f0 52%, #9fb1c7 100%)'
+                            : 'linear-gradient(180deg, #0284c7 0%, #1d4ed8 100%)'
+                          : 'transparent',
+                        color: isActive ? (darkModeTheme ? '#070a10' : '#ffffff') : (darkModeTheme ? '#94a3b8' : '#475569'),
+                        border: 'none',
+                        borderRadius: '9999px',
+                        padding: '7px 6px',
+                        fontSize: '10.5px',
+                        fontWeight: isActive ? 900 : 600,
+                        fontFamily: 'monospace',
+                        letterSpacing: '0.4px',
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap',
+                        boxShadow: isActive
+                          ? darkModeTheme
+                            ? '0 2px 10px rgba(56, 189, 248, 0.22), inset 0 1px 1px rgba(255, 255, 255, 0.95)'
+                            : '0 2px 10px rgba(37, 99, 235, 0.35)'
+                          : 'none',
+                        transition: 'all 0.16s ease'
+                      }}
+                    >
+                      {isActive && <Icon style={{ width: '13px', height: '13px', flexShrink: 0, color: darkModeTheme ? '#070a10' : '#ffffff' }} />}
+                      <span>{tr(tab.label, userPreferences.language)}</span>
+                    </button>
+                    {idx < arr.length - 1 && !isActive && !isAdjacentToActive && activeTab !== arr[idx + 1].id && (
+                      <div style={{ width: '1px', height: '14px', background: darkModeTheme ? 'rgba(148, 163, 184, 0.2)' : '#cbd5e1', flexShrink: 0 }} />
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </div>
+          </header>
+
+          {/* DESKTOP TOP BAR (>= 1024px) */}
+          <header
+            id="desktop-top-header"
+            className={`hidden lg:flex sticky top-0 z-30 items-center justify-between border-b px-6 py-3.5 backdrop-blur-md ${
+              darkModeTheme
+                ? 'border-slate-800/80 bg-[#070b12]/95'
+                : 'border-slate-200 bg-white/95'
+            }`}
+          >
+            <div className="flex items-center gap-3.5">
+              <div className="relative h-11 w-11 shrink-0 rounded-full border border-cyan-400/50 bg-[#0d131f] p-0.5 shadow-[0_0_20px_rgba(56,189,248,0.28)] overflow-hidden">
+                <img
+                  src={metallicLogo}
+                  alt="CHIXUS Seal"
+                  className="h-full w-full rounded-full object-cover"
+                />
+              </div>
+              <div className="flex flex-col">
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`text-xl font-black tracking-wide ${
+                      darkModeTheme ? 'text-white' : 'text-slate-900'
+                    }`}
+                    style={{ fontFamily: "'Space Grotesk', sans-serif" }}
                   >
                     CHIXUS
                   </span>
                   {currentUserProfile?.starTier ? (
-                    <span
-                      id="header-star-tier-badge"
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '3px',
-                        padding: '1px 6px',
-                        borderRadius: '4px',
-                        background: darkModeTheme
-                          ? 'linear-gradient(135deg, rgba(37, 99, 235, 0.25) 0%, rgba(56, 189, 248, 0.18) 100%)'
-                          : '#e0f2fe',
-                        border: '1px solid #38bdf8',
-                        color: darkModeTheme ? '#7dd3fc' : '#0369a1',
-                        fontSize: '9.5px',
-                        fontFamily: 'monospace',
-                        fontWeight: 900
-                      }}
-                    >
+                    <span className="rounded border border-sky-400/60 bg-sky-500/15 px-1.5 py-0.5 font-mono text-[10px] font-bold text-sky-300">
                       {currentUserProfile.starTier}
                     </span>
                   ) : null}
                 </div>
-                <span
-                  id="header-operator-id-display"
-                  style={{
-                    fontSize: '11.5px',
-                    fontFamily: 'monospace',
-                    fontWeight: 700,
-                    color: darkModeTheme ? '#94a3b8' : '#475569',
-                    letterSpacing: '0.6px'
-                  }}
-                >
+                <span className="font-mono text-xs font-medium text-slate-400">
                   {isGuestMode
                     ? tr('Guest', userPreferences.language)
                     : `ID: ${currentUserProfile?.secretId || generatedSecretID || ''}`}
@@ -14229,39 +14700,26 @@ export function App() {
               </div>
             </div>
 
-            {/* Top-Right: Network Connectivity Indicator, Notification Bell & Menu Hamburger */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div className="flex items-center gap-2.5">
               {isGuestMode && (
                 <button
                   type="button"
-                  id="header-guest-signin-btn"
                   onClick={() => {
                     sound.playClick();
                     setPendingGuestRedirect({ tab: activeTab });
                     setOnboardStage('login');
                   }}
-                  style={{
-                    background: 'rgba(56, 189, 248, 0.14)',
-                    border: '1px solid rgba(56, 189, 248, 0.45)',
-                    borderRadius: '9px',
-                    padding: '5px 10px',
-                    color: darkModeTheme ? '#7dd3fc' : '#0369a1',
-                    fontSize: '11px',
-                    fontFamily: 'monospace',
-                    fontWeight: 800,
-                    cursor: 'pointer',
-                    whiteSpace: 'nowrap'
-                  }}
+                  className="rounded-xl border border-sky-400/45 bg-sky-500/15 px-3 py-2 font-mono text-xs font-bold text-sky-300 hover:bg-sky-500/25 cursor-pointer"
                 >
                   {tr('Sign in', userPreferences.language)}
                 </button>
               )}
-              <NetworkStatusIcon />
 
-              {/* Notification Hub Button with Metallic Bevel */}
+              <NetworkStatusIcon onClick={triggerNetworkResync} />
+
               <button
                 type="button"
-                id="header-notification-hub-btn"
+                id="desktop-notification-hub-btn"
                 onClick={() => {
                   sound.playClick();
                   if (!requireAuthForAction(activeTab, 'notifications')) return;
@@ -14274,25 +14732,14 @@ export function App() {
                   setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
                   setIsNotificationsModalOpen(true);
                 }}
-                style={{
-                  position: 'relative',
-                  background: darkModeTheme ? '#0d1119' : '#ffffff',
-                  border: darkModeTheme ? '1px solid rgba(203, 213, 225, 0.2)' : '1px solid #cbd5e1',
-                  borderRadius: '11px',
-                  width: '36px',
-                  height: '36px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  color: darkModeTheme ? '#cbd5e1' : '#334155',
-                  cursor: 'pointer',
-                  boxShadow: darkModeTheme
-                    ? 'inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 4px 12px rgba(0, 0, 0, 0.45)'
-                    : '0 2px 6px rgba(15, 23, 42, 0.08)'
-                }}
+                className={`relative flex h-10 w-10 items-center justify-center rounded-[11px] border transition-colors cursor-pointer ${
+                  darkModeTheme
+                    ? 'border-slate-700/70 bg-[#0d131f] text-slate-200 hover:border-sky-400/60'
+                    : 'border-slate-300 bg-white text-slate-700 hover:border-sky-500'
+                }`}
                 title="Open Notification Hub"
               >
-                <Bell style={{ width: '16px', height: '16px', color: darkModeTheme ? '#cbd5e1' : '#334155' }} />
+                <Bell className="h-[18px] w-[18px]" />
                 {(() => {
                   const readSet = getReadNotificationIdsSet();
                   const unreadReqsCount = incomingConnectionRequests.filter(
@@ -14304,513 +14751,368 @@ export function App() {
                   const totalUnreadCount = unreadReqsCount + unreadNotifsCount;
                   if (totalUnreadCount <= 0) return null;
                   return (
-                    <span
-                      id="header-notification-badge-dot"
-                      style={{
-                        position: 'absolute',
-                        top: '-3px',
-                        right: '-3px',
-                        minWidth: '15px',
-                        height: '15px',
-                        padding: '0 3px',
-                        borderRadius: '999px',
-                        background: '#2563eb',
-                        border: darkModeTheme ? '1.5px solid #070a10' : '1.5px solid #ffffff',
-                        color: '#ffffff',
-                        fontSize: '8.5px',
-                        fontFamily: 'monospace',
-                        fontWeight: 900,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        boxShadow: '0 0 10px rgba(56, 189, 248, 0.75)'
-                      }}
-                    >
+                    <span className="absolute -top-1 -right-1 flex min-w-[16px] h-4 items-center justify-center rounded-full bg-blue-600 px-1 font-mono text-[9px] font-bold text-white border border-[#070b12]">
                       {totalUnreadCount > 99 ? '99+' : totalUnreadCount}
                     </span>
                   );
                 })()}
               </button>
-
-              {/* Hamburger Menu Action Button */}
-              <button
-                type="button"
-                id="header-menu-drawer-btn"
-                onClick={() => {
-                  sound.playClick();
-                  setIsNetworkAdminDrawerOpen(true);
-                }}
-                style={{
-                  background: darkModeTheme ? '#0d1119' : '#ffffff',
-                  border: darkModeTheme ? '1px solid rgba(203, 213, 225, 0.2)' : '1px solid #cbd5e1',
-                  borderRadius: '11px',
-                  width: '36px',
-                  height: '36px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  color: darkModeTheme ? '#cbd5e1' : '#334155',
-                  cursor: 'pointer',
-                  boxShadow: darkModeTheme
-                    ? 'inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 4px 12px rgba(0, 0, 0, 0.45)'
-                    : '0 2px 6px rgba(15, 23, 42, 0.08)'
-                }}
-                title="Tap to open Network Administration Drawer"
-              >
-                <Menu style={{ width: '18px', height: '18px', color: darkModeTheme ? '#cbd5e1' : '#334155' }} />
-              </button>
             </div>
-          </div>
+          </header>
 
-          {/* Tactical Pill Navigation Bar with Raised Brushed-Silver Active Tab & Clean Dividers */}
-          <div
-            className="tactical-pill-bar"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              background: darkModeTheme ? '#090c12' : '#e2e8f0',
-              border: darkModeTheme ? '1px solid rgba(203, 213, 225, 0.14)' : '1px solid #cbd5e1',
-              borderRadius: '9999px',
-              padding: '3px 4px',
-              boxShadow: darkModeTheme ? 'inset 0 2px 5px rgba(0, 0, 0, 0.72)' : 'inset 0 1px 3px rgba(15, 23, 42, 0.08)'
-            }}
-          >
-            {[
-              { id: 'feed', label: 'FEED', icon: Globe },
-              { id: 'inspect', label: 'INSPECT', icon: Camera },
-              { id: 'metrics', label: 'METRICS', icon: LayoutGrid },
-              { id: 'messages', label: 'MESSAGES', icon: Mail },
-              { id: 'search', label: 'SEARCH', icon: Search }
-            ].map((tab, idx, arr) => {
-              const Icon = tab.icon;
-              const isActive = activeTab === tab.id;
-              const isAdjacentToActive = idx > 0 && activeTab === arr[idx - 1].id;
-              return (
-                <React.Fragment key={tab.id}>
-                  <button
-                    type="button"
-                    id={`nav-tab-${tab.id}`}
-                    onClick={() => {
-                      sound.playClick();
-                      setActiveTab(tab.id as typeof activeTab);
-                      window.scrollTo({ top: 0, behavior: 'smooth' });
-                    }}
-                    style={{
-                      flex: 1,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: '5px',
-                      background: isActive
-                        ? darkModeTheme
-                          ? 'linear-gradient(180deg, #f8fafc 0%, #dbe4f0 52%, #9fb1c7 100%)'
-                          : 'linear-gradient(180deg, #0284c7 0%, #1d4ed8 100%)'
-                        : 'transparent',
-                      color: isActive ? (darkModeTheme ? '#070a10' : '#ffffff') : (darkModeTheme ? '#94a3b8' : '#475569'),
-                      border: 'none',
-                      borderRadius: '9999px',
-                      padding: '7px 8px',
-                      fontSize: '11px',
-                      fontWeight: isActive ? 900 : 600,
-                      fontFamily: 'monospace',
-                      letterSpacing: '0.4px',
-                      cursor: 'pointer',
-                      whiteSpace: 'nowrap',
-                      boxShadow: isActive
-                        ? darkModeTheme
-                          ? '0 2px 10px rgba(56, 189, 248, 0.22), inset 0 1px 1px rgba(255, 255, 255, 0.95)'
-                          : '0 2px 10px rgba(37, 99, 235, 0.35)'
-                        : 'none',
-                      transition: 'all 0.16s ease'
-                    }}
-                  >
-                    {isActive && <Icon style={{ width: '13px', height: '13px', flexShrink: 0, color: darkModeTheme ? '#070a10' : '#ffffff' }} />}
-                    <span>{tr(tab.label, userPreferences.language)}</span>
-                  </button>
-                  {idx < arr.length - 1 && !isActive && !isAdjacentToActive && activeTab !== arr[idx + 1].id && (
-                    <div style={{ width: '1px', height: '14px', background: darkModeTheme ? 'rgba(148, 163, 184, 0.2)' : '#cbd5e1', flexShrink: 0 }} />
-                  )}
-                </React.Fragment>
-              );
-            })}
-          </div>
-        </header>
-
-        {/* Main Tab Content Display */}
-        <main style={{ flex: 1, padding: '12px', boxSizing: 'border-box' }}>
-          {/* ======================================================== */}
-          {/* 1. NETWORK / FEED TAB                                    */}
-          {/* ======================================================== */}
-          {activeTab === 'feed' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              {/* Creator Box */}
-              <form
-                id="feed-creator-form"
-                onSubmit={handleCreatePost}
-                className={darkModeTheme ? 'feed-card-lift tactical-surface' : 'feed-card-lift tactical-surface-light'}
-                style={{
-                  background: darkModeTheme
-                    ? 'linear-gradient(165deg, #10141d 0%, #090c12 100%)'
-                    : 'linear-gradient(165deg, #ffffff 0%, #f1f5f9 100%)',
-                  border: darkModeTheme ? '1px solid rgba(203, 213, 225, 0.16)' : '1px solid #cbd5e1',
-                  borderRadius: '20px',
-                  padding: '16px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '12px',
-                  boxShadow: darkModeTheme
-                    ? 'inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 10px 28px rgba(0, 0, 0, 0.58)'
-                    : 'inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 8px 22px rgba(15, 23, 42, 0.07)',
-                  transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)'
-                }}
-              >
-                {/* Row: Avatar + Inset Textarea */}
-                <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
-                  <div
-                    className="tactical-avatar-bezel"
-                    style={{
-                      width: '42px',
-                      height: '42px',
-                      cursor: 'pointer',
-                      flexShrink: 0
-                    }}
-                    onClick={() => {
-                      if (!requireAuthForAction('feed', 'open_profile')) return;
-                      handleOpenUserNode({
-                        name: userName,
-                        badge: userHeadline || '',
-                        avatar: avatarUrl,
-                        inspectionsConducted: formatNumber(userInspectionsConducted),
-                        faultsIsolated: formatNumber(userFaultsIsolated),
-                        aiScanAccuracy: userAiScanAccuracy,
-                        location: userLocation,
-                        headline: userHeadline,
-                        summary: executiveSummary
-                      });
-                    }}
-                    title="View your Operator Profile"
-                  >
-                    <img
-                      src={avatarUrl}
-                      alt={userName}
-                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                      referrerPolicy="no-referrer"
-                    />
-                  </div>
-                  <textarea
-                    id="feed-creator-textarea"
-                    rows={3}
-                    readOnly={isGuestMode}
-                    onFocus={(e) => {
-                      if (isGuestMode) {
-                        e.currentTarget.blur();
-                        requireAuthForAction('feed', 'create_post');
-                      }
-                    }}
-                    value={newPostContent}
-                    onChange={(e) => setNewPostContent(e.target.value)}
-                    placeholder={tr('Share a technical update, circuit blueprint, or verification telemetry...', userPreferences.language)}
-                    className="tactical-inset-input"
-                    style={{
-                      flex: 1,
-                      padding: '12px 14px',
-                      borderRadius: '14px',
-                      background: darkModeTheme ? '#07090e' : '#ffffff',
-                      border: darkModeTheme ? '1px solid rgba(148, 163, 184, 0.2)' : '1px solid #cbd5e1',
-                      color: darkModeTheme ? '#e2e8f0' : '#0f172a',
-                      fontSize: '12px',
-                      fontFamily: 'monospace',
-                      outline: 'none',
-                      resize: 'none',
-                      boxSizing: 'border-box',
-                      lineHeight: 1.5,
-                      boxShadow: darkModeTheme ? 'inset 0 2px 5px rgba(0, 0, 0, 0.7)' : 'inset 0 1px 3px rgba(15, 23, 42, 0.06)'
-                    }}
-                  />
-                </div>
-
-                {newPostImage && (
-                  <div style={{ position: 'relative', borderRadius: '12px', overflow: 'hidden', maxHeight: '180px', border: '1px solid rgba(56, 189, 248, 0.35)' }}>
-                    <img src={newPostImage} alt="Preview" style={{ width: '100%', maxHeight: '180px', objectFit: 'cover' }} />
-                    <button
-                      type="button"
-                      onClick={() => setNewPostImage(null)}
-                      style={{
-                        position: 'absolute',
-                        top: '6px',
-                        right: '6px',
-                        background: 'rgba(0,0,0,0.75)',
-                        color: '#ffffff',
-                        border: 'none',
-                        borderRadius: '50%',
-                        width: '24px',
-                        height: '24px',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center'
-                      }}
-                    >
-                      <X style={{ width: '14px', height: '14px' }} />
-                    </button>
-                  </div>
-                )}
-
-                {/* Row: Publishing Info & Add Media Button */}
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <div style={{ fontSize: '11.5px', fontFamily: 'monospace', color: darkModeTheme ? '#94a3b8' : '#475569' }}>
-                    {tr('Publishing as:', userPreferences.language)}{' '}
-                    <span style={{ color: darkModeTheme ? '#f8fafc' : '#0f172a', fontWeight: 'bold' }}>
-                      {isGuestMode ? tr('Guest', userPreferences.language) : userName}
-                    </span>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!requireAuthForAction('feed', 'add_media')) return;
-                      postFileInputRef.current?.click();
-                    }}
-                    className="tactical-action-btn"
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '6px',
-                      background: darkModeTheme ? '#0d1119' : '#ffffff',
-                      border: darkModeTheme ? '1px solid rgba(203, 213, 225, 0.2)' : '1px solid #cbd5e1',
-                      borderRadius: '9px',
-                      padding: '6px 12px',
-                      color: darkModeTheme ? '#e2e8f0' : '#0f172a',
-                      fontSize: '11.5px',
-                      fontFamily: 'monospace',
-                      cursor: 'pointer'
-                    }}
-                  >
-                    <Camera style={{ width: '14px', height: '14px', color: '#38bdf8' }} />
-                    <span>{tr('Add Media', userPreferences.language)}</span>
-                  </button>
-                  <input
-                    ref={postFileInputRef}
-                    type="file"
-                    accept="image/*"
-                    style={{ display: 'none' }}
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) {
-                        const reader = new FileReader();
-                        reader.onload = async () => {
-                          const compressed = await compressImageDataUrl(reader.result as string, 640, 0.72);
-                          setNewPostImage(compressed);
-                        };
-                        reader.readAsDataURL(file);
-                      }
-                    }}
-                  />
-                </div>
-
-                {/* Raised Brushed-Silver Metallic Button: Share Update */}
-                <button
-                  type="submit"
-                  disabled={!isGuestMode && !safeTrim(newPostContent) && !newPostImage}
-                  className="tactical-brushed-silver-btn"
-                  style={{
-                    width: '100%',
-                    padding: '11px 16px',
-                    borderRadius: '12px',
-                    fontSize: '13px',
-                    fontWeight: 900,
-                    fontFamily: 'monospace',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '8px',
-                    cursor: !isGuestMode && !newPostContent.trim() && !newPostImage ? 'not-allowed' : 'pointer',
-                    opacity: !isGuestMode && !newPostContent.trim() && !newPostImage ? 0.5 : 1
+          {/* Main Tab Content Display */}
+          <main className="flex-1 w-full max-w-4xl mx-auto px-3 py-3 lg:px-4 xl:px-6 lg:py-5 box-border">
+            {/* ======================================================== */}
+            {/* 1. NETWORK / FEED TAB                                    */}
+            {/* ======================================================== */}
+            {activeTab === 'feed' && (
+              <div className="flex flex-col gap-3.5">
+                {/* Shared hidden media input for both Mobile & Desktop post composers */}
+                <input
+                  ref={postFileInputRef}
+                  type="file"
+                  accept="image/*"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      const reader = new FileReader();
+                      reader.onload = async () => {
+                        const compressed = await compressImageDataUrl(reader.result as string, 640, 0.72);
+                        setNewPostImage(compressed);
+                      };
+                      reader.readAsDataURL(file);
+                    }
+                    e.target.value = '';
                   }}
-                >
-                  <Send style={{ width: '14px', height: '14px', transform: 'rotate(-25deg)', color: '#070a10' }} />
-                  <span>{tr('Publish Post', userPreferences.language)}</span>
-                </button>
-              </form>
+                />
 
-              {/* SVG Filter Definition for Real-Time Solder Edge Detection */}
-              <svg style={{ position: 'absolute', width: 0, height: 0, pointerEvents: 'none' }} aria-hidden="true">
-                <defs>
-                  <filter id="chixus-edge-detect-filter">
-                    <feColorMatrix type="saturate" values="0" result="gray" />
-                    <feConvolveMatrix
-                      in="gray"
-                      order="3 3"
-                      kernelMatrix="-1 -1 -1 -1 8 -1 -1 -1 -1"
-                      divisor="1"
-                      bias="0.08"
-                      preserveAlpha="true"
-                      result="edges"
-                    />
-                    <feComponentTransfer in="edges">
-                      <feFuncR type="linear" slope="2.4" intercept="0" />
-                      <feFuncG type="linear" slope="2.8" intercept="0" />
-                      <feFuncB type="linear" slope="3.0" intercept="0" />
-                    </feComponentTransfer>
-                  </filter>
-                </defs>
-              </svg>
-
-              {/* Feed Timeline Posts */}
-              {posts.length === 0 ? (
-                <div
-                  id="feed-timeline-empty-state"
-                  style={{
-                    padding: '48px 20px',
-                    textAlign: 'center',
-                    background: darkModeTheme ? 'rgba(15, 23, 42, 0.6)' : 'rgba(255, 255, 255, 0.8)',
-                    borderRadius: '16px',
-                    border: darkModeTheme ? '1px dashed rgba(56, 189, 248, 0.3)' : '1px dashed #cbd5e1',
-                    margin: '20px 0',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '12px'
-                  }}
+                {/* MOBILE STACKED POST COMPOSER (< 1024px) */}
+                <form
+                  id="feed-creator-form"
+                  onSubmit={handleCreatePost}
+                  className={`lg:hidden flex flex-col gap-3 rounded-2xl border p-4 shadow-lg ${
+                    darkModeTheme
+                      ? 'border-slate-700/60 bg-[#0d131f]'
+                      : 'border-slate-200 bg-white'
+                  }`}
                 >
-                  <div
-                    style={{
-                      width: '48px',
-                      height: '48px',
-                      borderRadius: '50%',
-                      background: 'rgba(56, 189, 248, 0.1)',
-                      border: '1px solid rgba(56, 189, 248, 0.3)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      color: '#38bdf8'
-                    }}
-                  >
-                    <Radio style={{ width: '24px', height: '24px' }} />
-                  </div>
-                  <div style={{ fontSize: '15px', fontWeight: 700, color: darkModeTheme ? '#f1f5f9' : '#0f172a', fontFamily: 'monospace' }}>
-                    No Transmissions Broadcast Yet.
-                  </div>
-                  <div style={{ fontSize: '12.5px', color: '#64748b', maxWidth: '380px', lineHeight: 1.5, fontFamily: 'monospace' }}>
-                    The network timeline is waiting for authentic operator broadcasts.
-                  </div>
-                </div>
-              ) : (
-                posts.map((post) => {
-                const isInstantLinkedInRepost = Boolean(post.resharedPost && !safeTrim(post.content));
-                const isMyOwnPost = isPostOwnedByCurrentUser(post);
-                const displayPostAuthor = isMyOwnPost ? userName : post.author;
-                const displayPostBadge = isMyOwnPost ? (userHeadline || post.badge) : post.badge;
-                const displayPostAvatar = isMyOwnPost
-                  ? avatarUrl
-                  : getLivePeerAvatar(
-                      post.authorId,
-                      post.author,
-                      post.avatar,
-                      peerProfiles,
-                      contacts,
-                      incomingConnectionRequests,
-                      notifications,
-                      nodeSearchResult
-                    );
-                const isMyOwnReshare = post.resharedPost
-                  ? isAuthorCurrentUser(post.resharedPost.author, post.resharedPost.authorId)
-                  : false;
-                const displayReshareAuthor = post.resharedPost
-                  ? (isMyOwnReshare ? userName : post.resharedPost.author)
-                  : '';
-                const displayReshareBadge = post.resharedPost
-                  ? (isMyOwnReshare ? (userHeadline || post.resharedPost.badge) : post.resharedPost.badge)
-                  : '';
-                const displayReshareAvatar = post.resharedPost
-                  ? (isMyOwnReshare
-                      ? avatarUrl
-                      : getLivePeerAvatar(
-                          post.resharedPost.authorId,
-                          post.resharedPost.author,
-                          post.resharedPost.avatar,
-                          peerProfiles,
-                          contacts,
-                          incomingConnectionRequests,
-                          notifications,
-                          nodeSearchResult
-                        ))
-                  : '';
-                return (
-                <div
-                  key={post.id}
-                  className={darkModeTheme ? 'feed-card-lift tactical-surface' : 'feed-card-lift tactical-surface-light'}
-                  style={{
-                    position: 'relative',
-                    overflow: 'hidden',
-                    background: darkModeTheme
-                      ? 'linear-gradient(165deg, #10141d 0%, #090c12 100%)'
-                      : 'linear-gradient(165deg, #ffffff 0%, #f1f5f9 100%)',
-                    border: darkModeTheme ? '1px solid rgba(203, 213, 225, 0.14)' : '1px solid #cbd5e1',
-                    borderRadius: '20px',
-                    padding: '16px',
-                    boxShadow: darkModeTheme
-                      ? 'inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 10px 28px rgba(0, 0, 0, 0.58)'
-                      : 'inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 8px 22px rgba(15, 23, 42, 0.07)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '12px',
-                    transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)'
-                  }}
-                >
-
-                  {/* LinkedIn-Style Top Repost Header when someone reposted */}
-                  {post.resharedPost && (
+                  <div className="flex items-start gap-3">
                     <div
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        paddingBottom: '8px',
-                        borderBottom: darkModeTheme ? '1px solid #1e2432' : '1px solid #e2e8f0',
-                        fontSize: '11.5px',
-                        color: darkModeTheme ? '#94a3b8' : '#475569'
+                      className="tactical-avatar-bezel h-[42px] w-[42px] shrink-0 cursor-pointer"
+                      onClick={() => {
+                        if (!requireAuthForAction('feed', 'open_profile')) return;
+                        handleOpenUserNode({
+                          name: userName,
+                          badge: userHeadline || '',
+                          avatar: avatarUrl,
+                          inspectionsConducted: formatNumber(userInspectionsConducted),
+                          faultsIsolated: formatNumber(userFaultsIsolated),
+                          aiScanAccuracy: userAiScanAccuracy,
+                          location: userLocation,
+                          headline: userHeadline,
+                          summary: executiveSummary
+                        });
                       }}
+                      title="View your Operator Profile"
                     >
-                      <div
-                        style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}
-                        onClick={() => openPeerProfile(displayPostAuthor, post.authorId)}
+                      <img
+                        src={avatarUrl}
+                        alt={userName}
+                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                        referrerPolicy="no-referrer"
+                      />
+                    </div>
+                    <textarea
+                      id="feed-creator-textarea"
+                      rows={3}
+                      readOnly={isGuestMode}
+                      onFocus={(e) => {
+                        if (isGuestMode) {
+                          e.currentTarget.blur();
+                          requireAuthForAction('feed', 'create_post');
+                        }
+                      }}
+                      value={newPostContent}
+                      onChange={(e) => setNewPostContent(e.target.value)}
+                      placeholder={tr('Share a technical update, circuit blueprint, or verification telemetry...', userPreferences.language)}
+                      className={`flex-1 rounded-xl border px-3.5 py-2.5 font-mono text-xs leading-relaxed outline-none resize-none ${
+                        darkModeTheme
+                          ? 'border-slate-700/70 bg-[#070b12] text-slate-100 placeholder:text-slate-400 focus:border-cyan-400/60'
+                          : 'border-slate-300 bg-slate-50 text-slate-900 placeholder:text-slate-400'
+                      }`}
+                    />
+                  </div>
+
+                  {newPostImage && (
+                    <div className="relative rounded-xl overflow-hidden max-h-[180px] border border-sky-400/40">
+                      <img src={newPostImage} alt="Preview" className="w-full max-h-[180px] object-cover" />
+                      <button
+                        type="button"
+                        onClick={() => setNewPostImage(null)}
+                        className="absolute top-1.5 right-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-black/75 text-white cursor-pointer"
                       >
-                        <div className="tactical-avatar-bezel" style={{ width: '24px', height: '24px' }}>
-                          <img
-                            src={displayPostAvatar}
-                            alt={displayPostAuthor}
-                            style={{
-                              width: '100%',
-                              height: '100%',
-                              borderRadius: '50%',
-                              objectFit: 'cover'
-                            }}
-                          />
-                        </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
-                          <span style={{ fontWeight: 700, color: darkModeTheme ? '#f8fafc' : '#0f172a' }}>{displayPostAuthor}</span>
-                          <span style={{ color: darkModeTheme ? '#94a3b8' : '#64748b' }}>{tr('reposted this', userPreferences.language)}</span>
-                        </div>
-                      </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '5px', color: '#64748b', fontSize: '11px' }}>
-                        <Repeat2 style={{ width: '13px', height: '13px', color: '#38bdf8' }} />
-                        <span>{formatRelativeTime(post, nowTick)}</span>
-                      </div>
+                        <X className="h-3.5 w-3.5" />
+                      </button>
                     </div>
                   )}
 
-                  {/* Post Author Header (Shown for original posts or reposts with thoughts) */}
-                  {!isInstantLinkedInRepost && (
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                      <div
-                        style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}
-                        onClick={() => openPeerProfile(displayPostAuthor, post.authorId)}
-                        title={`View ${displayPostAuthor}'s operator profile`}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="font-mono text-[11.5px] text-slate-400">
+                      {tr('Publishing as:', userPreferences.language)}{' '}
+                      <span className={`font-bold ${darkModeTheme ? 'text-white' : 'text-slate-900'}`}>
+                        {isGuestMode ? tr('Guest', userPreferences.language) : userName}
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!requireAuthForAction('feed', 'add_media')) return;
+                        postFileInputRef.current?.click();
+                      }}
+                      className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 font-mono text-[11.5px] cursor-pointer ${
+                        darkModeTheme
+                          ? 'border-slate-700/70 bg-[#121928] text-slate-100 hover:border-cyan-400/50'
+                          : 'border-slate-300 bg-white text-slate-800'
+                      }`}
+                    >
+                      <Camera className="h-3.5 w-3.5 text-sky-400" />
+                      <span>{tr('Add Media', userPreferences.language)}</span>
+                    </button>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={!isGuestMode && !safeTrim(newPostContent) && !newPostImage}
+                    className="tactical-brushed-silver-btn flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 font-mono text-[13px] font-black cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <Send className="h-3.5 w-3.5 -rotate-12 text-[#070a10]" />
+                    <span>Share Update</span>
+                  </button>
+                </form>
+
+                {/* DESKTOP INLINE HORIZONTAL POST COMPOSER (>= 1024px) */}
+                <form
+                  id="desktop-feed-creator-form"
+                  onSubmit={handleCreatePost}
+                  className={`hidden lg:flex flex-col gap-3 rounded-2xl border p-4 shadow-[0_12px_30px_rgba(0,0,0,0.45)] ${
+                    darkModeTheme
+                      ? 'border-slate-700/60 bg-[#0d131f]'
+                      : 'border-slate-200 bg-white'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!requireAuthForAction('feed', 'open_profile')) return;
+                        handleOpenUserNode({
+                          name: userName,
+                          badge: userHeadline || '',
+                          avatar: avatarUrl,
+                          inspectionsConducted: formatNumber(userInspectionsConducted),
+                          faultsIsolated: formatNumber(userFaultsIsolated),
+                          aiScanAccuracy: userAiScanAccuracy,
+                          location: userLocation,
+                          headline: userHeadline,
+                          summary: executiveSummary
+                        });
+                      }}
+                      title="View your Operator Profile"
+                      className="h-11 w-11 shrink-0 rounded-full border border-slate-600/80 overflow-hidden cursor-pointer"
+                    >
+                      <img
+                        src={avatarUrl}
+                        alt={userName}
+                        className="h-full w-full object-cover"
+                        referrerPolicy="no-referrer"
+                      />
+                    </button>
+
+                    <textarea
+                      id="desktop-feed-creator-textarea"
+                      rows={2}
+                      readOnly={isGuestMode}
+                      onFocus={(e) => {
+                        if (isGuestMode) {
+                          e.currentTarget.blur();
+                          requireAuthForAction('feed', 'create_post');
+                        }
+                      }}
+                      value={newPostContent}
+                      onChange={(e) => setNewPostContent(e.target.value)}
+                      placeholder={tr('Share a technical update, circuit blueprint, or verification telemetry...', userPreferences.language)}
+                      className={`min-h-[54px] min-w-0 flex-1 rounded-xl border px-3.5 py-2.5 text-xs leading-relaxed outline-none resize-none ${
+                        darkModeTheme
+                          ? 'border-slate-700/70 bg-[#090d16] text-slate-100 placeholder:text-slate-400 focus:border-cyan-400/60'
+                          : 'border-slate-300 bg-slate-50 text-slate-900 placeholder:text-slate-400'
+                      }`}
+                    />
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!requireAuthForAction('feed', 'add_media')) return;
+                        postFileInputRef.current?.click();
+                      }}
+                      className={`flex h-[54px] w-[70px] xl:w-[76px] shrink-0 flex-col items-center justify-center gap-1 rounded-xl border px-2 text-center text-[11px] font-medium transition-colors cursor-pointer ${
+                        darkModeTheme
+                          ? 'border-slate-700/70 bg-[#121928] text-slate-200 hover:border-cyan-400/50'
+                          : 'border-slate-300 bg-slate-50 text-slate-800'
+                      }`}
+                    >
+                      <Camera className="h-4 w-4 text-sky-400" />
+                      <span className="leading-tight">Add Media</span>
+                    </button>
+
+                    <button
+                      type="submit"
+                      disabled={!isGuestMode && !safeTrim(newPostContent) && !newPostImage}
+                      className="tactical-brushed-silver-btn flex h-[54px] shrink-0 items-center justify-center gap-2 rounded-xl px-3 xl:px-4 text-xs font-extrabold text-[#070a10] shadow-md cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <Send className="h-3.5 w-3.5 -rotate-12 text-[#070a10]" />
+                      <span>Share Update</span>
+                    </button>
+                  </div>
+
+                  {newPostImage && (
+                    <div className="relative rounded-xl overflow-hidden max-h-[200px] border border-sky-400/40">
+                      <img src={newPostImage} alt="Preview" className="w-full max-h-[200px] object-cover" />
+                      <button
+                        type="button"
+                        onClick={() => setNewPostImage(null)}
+                        className="absolute top-2 right-2 flex h-7 w-7 items-center justify-center rounded-full bg-black/75 text-white cursor-pointer"
                       >
-                        <div style={{ position: 'relative' }}>
-                          <div className="tactical-avatar-bezel" style={{ width: '42px', height: '42px' }}>
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  )}
+                </form>
+
+                {/* SVG Filter Definition for Real-Time Solder Edge Detection */}
+                <svg style={{ position: 'absolute', width: 0, height: 0, pointerEvents: 'none' }} aria-hidden="true">
+                  <defs>
+                    <filter id="chixus-edge-detect-filter">
+                      <feColorMatrix type="saturate" values="0" result="gray" />
+                      <feConvolveMatrix
+                        in="gray"
+                        order="3 3"
+                        kernelMatrix="-1 -1 -1 -1 8 -1 -1 -1 -1"
+                        divisor="1"
+                        bias="0.08"
+                        preserveAlpha="true"
+                        result="edges"
+                      />
+                      <feComponentTransfer in="edges">
+                        <feFuncR type="linear" slope="2.4" intercept="0" />
+                        <feFuncG type="linear" slope="2.8" intercept="0" />
+                        <feFuncB type="linear" slope="3.0" intercept="0" />
+                      </feComponentTransfer>
+                    </filter>
+                  </defs>
+                </svg>
+
+                {/* Feed Timeline Posts */}
+                {posts.length === 0 ? (
+                  <div
+                    id="feed-timeline-empty-state"
+                    className={`my-5 flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed px-5 py-12 text-center ${
+                      darkModeTheme
+                        ? 'border-sky-400/30 bg-[#0d131f]/70 text-slate-200'
+                        : 'border-slate-300 bg-white text-slate-900'
+                    }`}
+                  >
+                    <div className="flex h-12 w-12 items-center justify-center rounded-full border border-sky-400/30 bg-sky-500/10 text-sky-400">
+                      <Radio className="h-6 w-6" />
+                    </div>
+                    <div className="font-mono text-[15px] font-bold">No Transmissions Broadcast Yet.</div>
+                    <div className="max-w-[380px] font-mono text-xs leading-relaxed text-slate-500">
+                      The network timeline is waiting for authentic operator broadcasts.
+                    </div>
+                  </div>
+                ) : (
+                  posts.map((post) => {
+                  const isInstantLinkedInRepost = Boolean(post.resharedPost && !safeTrim(post.content));
+                  const isOfficialBroadcast =
+                    String(post.authorId || '').trim().toUpperCase() === 'CHIXUS-OFFICIAL' ||
+                    post.id === 'post-seed-chixus-official-welcome';
+                  const isMyOwnPost = !isOfficialBroadcast && isPostOwnedByCurrentUser(post);
+                  const displayPostAuthor = isOfficialBroadcast
+                    ? 'CHIXUS Official'
+                    : isMyOwnPost
+                    ? userName
+                    : post.author;
+                  const displayPostBadge = isOfficialBroadcast
+                    ? ''
+                    : isMyOwnPost
+                    ? (userHeadline || post.badge)
+                    : post.badge;
+                  const displayPostAvatar = isOfficialBroadcast
+                    ? metallicLogo
+                    : isMyOwnPost
+                    ? avatarUrl
+                    : getLivePeerAvatar(
+                        post.authorId,
+                        post.author,
+                        post.avatar,
+                        peerProfiles,
+                        contacts,
+                        incomingConnectionRequests,
+                        notifications,
+                        nodeSearchResult
+                      );
+                  const isMyOwnReshare = post.resharedPost
+                    ? isAuthorCurrentUser(post.resharedPost.author, post.resharedPost.authorId)
+                    : false;
+                  const displayReshareAuthor = post.resharedPost
+                    ? (isMyOwnReshare ? userName : post.resharedPost.author)
+                    : '';
+                  const displayReshareBadge = post.resharedPost
+                    ? (isMyOwnReshare ? (userHeadline || post.resharedPost.badge) : post.resharedPost.badge)
+                    : '';
+                  const displayReshareAvatar = post.resharedPost
+                    ? (isMyOwnReshare
+                        ? avatarUrl
+                        : getLivePeerAvatar(
+                            post.resharedPost.authorId,
+                            post.resharedPost.author,
+                            post.resharedPost.avatar,
+                            peerProfiles,
+                            contacts,
+                            incomingConnectionRequests,
+                            notifications,
+                            nodeSearchResult
+                          ))
+                    : '';
+                  return (
+                  <div
+                    key={post.id}
+                    className={`feed-card-lift relative flex flex-col gap-3 overflow-hidden rounded-2xl border p-4 shadow-[0_12px_28px_rgba(0,0,0,0.45)] transition-all ${
+                      darkModeTheme
+                        ? 'border-slate-700/60 bg-[#0d131f]'
+                        : 'border-slate-200 bg-white'
+                    }`}
+                  >
+
+                    {/* LinkedIn-Style Top Repost Header when someone reposted */}
+                    {post.resharedPost && (
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          paddingBottom: '8px',
+                          borderBottom: darkModeTheme ? '1px solid #1e2432' : '1px solid #e2e8f0',
+                          fontSize: '11.5px',
+                          color: darkModeTheme ? '#94a3b8' : '#475569'
+                        }}
+                      >
+                        <div
+                          style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}
+                          onClick={() => openPeerProfile(displayPostAuthor, post.authorId)}
+                        >
+                          <div className="tactical-avatar-bezel" style={{ width: '24px', height: '24px' }}>
                             <img
                               src={displayPostAvatar}
                               alt={displayPostAuthor}
@@ -14818,117 +15120,156 @@ export function App() {
                                 width: '100%',
                                 height: '100%',
                                 borderRadius: '50%',
-                                objectFit: 'cover',
-                                display: 'block'
+                                objectFit: 'cover'
                               }}
                             />
                           </div>
-                          <span
-                            style={{
-                              position: 'absolute',
-                              bottom: '1px',
-                              right: '1px',
-                              width: '9px',
-                              height: '9px',
-                              borderRadius: '50%',
-                              backgroundColor: '#38bdf8',
-                              boxShadow: '0 0 6px rgba(56, 189, 248, 0.75)',
-                              border: darkModeTheme ? '1.5px solid #090c12' : '1.5px solid #ffffff'
-                            }}
-                          />
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
+                            <span style={{ fontWeight: 700, color: darkModeTheme ? '#f8fafc' : '#0f172a' }}>{displayPostAuthor}</span>
+                            <span style={{ color: darkModeTheme ? '#94a3b8' : '#64748b' }}>{tr('reposted this', userPreferences.language)}</span>
+                          </div>
                         </div>
-                        <div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-                            <span
-                              style={{
-                                fontSize: '14px',
-                                fontWeight: 'bold',
-                                fontFamily: "'Space Grotesk', -apple-system, sans-serif",
-                                color: darkModeTheme ? '#f8fafc' : '#0f172a'
-                              }}
-                            >
-                              {displayPostAuthor}
-                            </span>
-                            <span
-                              className="tactical-capsule-badge"
-                              style={{
-                                background: darkModeTheme ? 'rgba(15, 23, 42, 0.85)' : '#e2e8f0',
-                                border: darkModeTheme ? '1px solid rgba(148, 163, 184, 0.25)' : '1px solid #cbd5e1',
-                                color: darkModeTheme ? '#cbd5e1' : '#334155',
-                                padding: '2px 8px',
-                                borderRadius: '6px',
-                                fontFamily: 'monospace',
-                                fontSize: '11px'
-                              }}
-                            >
-                              {displayPostBadge || (isMyOwnPost ? 'Founder | CPO CHIXUS System' : 'Certified Operator')}
-                            </span>
-                          </div>
-                          <div style={{ fontSize: '11px', fontFamily: 'monospace', color: darkModeTheme ? '#94a3b8' : '#64748b', marginTop: '2px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                            <span>{formatRelativeTime(post, nowTick)} • </span>
-                            <Globe style={{ width: '11px', height: '11px', color: '#38bdf8' }} />
-                          </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', color: '#64748b', fontSize: '11px' }}>
+                          <Repeat2 style={{ width: '13px', height: '13px', color: '#38bdf8' }} />
+                          <span>{formatRelativeTime(post, nowTick)}</span>
                         </div>
                       </div>
+                    )}
 
-                      {/* Right Soft Capsule Tag: [You] or [+ Connect] */}
-                      <div>
-                        {isMyOwnPost ? (
+                    {/* Post Author Header (Shown for original posts or reposts with thoughts) */}
+                    {!isInstantLinkedInRepost && (
+                      <div className="flex items-start justify-between gap-2">
+                        <div
+                          className="flex items-center gap-3 cursor-pointer min-w-0"
+                          onClick={() => {
+                            if (isOfficialBroadcast) {
+                              setActiveTab('inspect');
+                              return;
+                            }
+                            openPeerProfile(displayPostAuthor, post.authorId);
+                          }}
+                          title={isOfficialBroadcast ? 'CHIXUS Official Platform' : `View ${displayPostAuthor}'s operator profile`}
+                        >
+                          <div className="relative h-11 w-11 shrink-0 rounded-full border border-slate-600/80 overflow-hidden bg-[#070b12]">
+                            <img
+                              src={displayPostAvatar}
+                              alt={displayPostAuthor}
+                              className="h-full w-full rounded-full object-cover"
+                            />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span
+                                className={`text-[14px] font-bold ${
+                                  darkModeTheme ? 'text-white' : 'text-slate-900'
+                                }`}
+                                style={{ fontFamily: "'Space Grotesk', -apple-system, sans-serif" }}
+                              >
+                                {displayPostAuthor}
+                              </span>
+                              <span
+                                className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-sky-500/20 text-sky-400"
+                                title="Verified CHIXUS Node"
+                              >
+                                <CheckCircle2 className="h-3.5 w-3.5 text-sky-400" />
+                              </span>
+                              {(displayPostBadge || (isMyOwnPost && userHeadline)) ? (
+                                <span
+                                  className="lg:hidden tactical-capsule-badge rounded-md border px-2 py-0.5 font-mono text-[10.5px]"
+                                  style={{
+                                    background: darkModeTheme ? 'rgba(15, 23, 42, 0.85)' : '#e2e8f0',
+                                    borderColor: darkModeTheme ? 'rgba(148, 163, 184, 0.25)' : '#cbd5e1',
+                                    color: darkModeTheme ? '#cbd5e1' : '#334155'
+                                  }}
+                                >
+                                  {displayPostBadge || 'QA & Diagnostic Testing Account'}
+                                </span>
+                              ) : null}
+                            </div>
+                            <div className="mt-0.5 flex items-center gap-1.5 font-mono text-[11px] text-slate-400">
+                              <span>{formatRelativeTime(post, nowTick)} •</span>
+                              <Globe className="h-3 w-3 text-sky-400" />
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Right Action: [You] pill on Mobile + [...] menu on Desktop / Connect for non-official peers */}
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {isMyOwnPost && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                triggerPostContextMenu(post);
+                              }}
+                              title="Your Post • Tap here to manage"
+                              className="lg:hidden tactical-emerald-capsule rounded-full border border-sky-400/45 bg-blue-600/15 px-2.5 py-0.5 font-mono text-[11px] font-bold text-sky-300 cursor-pointer"
+                            >
+                              {tr('You', userPreferences.language)}
+                            </button>
+                          )}
+
+                          {!isMyOwnPost && !isOfficialBroadcast && !isConnectedToUser(displayPostAuthor, post.authorId) && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (!requireAuthForAction('feed', 'connect_peer')) return;
+                                openPeerProfile(displayPostAuthor, post.authorId);
+                              }}
+                              className="tactical-emerald-capsule rounded-full border border-sky-400/45 bg-blue-600/15 px-2.5 py-0.5 font-mono text-[11px] font-bold text-sky-300 cursor-pointer"
+                            >
+                              {tr('+ Connect', userPreferences.language)}
+                            </button>
+                          )}
+
                           <button
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
-                              triggerPostContextMenu(post);
+                              if (isMyOwnPost) {
+                                triggerPostContextMenu(post);
+                              } else {
+                                if (!requireAuthForAction('feed', 'share_post')) return;
+                                setShareTargetPost(post);
+                                setIsShareDrawerOpen(true);
+                              }
                             }}
-                            title="Your Post • Tap here to manage"
-                            className="tactical-emerald-capsule"
-                            style={{
-                              background: darkModeTheme ? 'rgba(37, 99, 235, 0.16)' : '#e0f2fe',
-                              border: '1px solid rgba(56, 189, 248, 0.45)',
-                              color: darkModeTheme ? '#7dd3fc' : '#0369a1',
-                              padding: '3px 10px',
-                              borderRadius: '9999px',
-                              fontSize: '11px',
-                              fontWeight: 700,
-                              fontFamily: 'monospace',
-                              cursor: 'pointer'
-                            }}
+                            title="Post options"
+                            className={`${isMyOwnPost ? 'hidden lg:inline-flex' : 'inline-flex'} h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-800/70 hover:text-white transition-colors cursor-pointer`}
                           >
-                            {tr('You', userPreferences.language)}
+                            <MoreHorizontal className="h-4 w-4" />
                           </button>
-                        ) : !isConnectedToUser(displayPostAuthor, post.authorId) ? (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (!requireAuthForAction('feed', 'connect_peer')) return;
-                              openPeerProfile(displayPostAuthor, post.authorId);
-                            }}
-                            className="tactical-emerald-capsule"
-                            style={{
-                              background: darkModeTheme ? 'rgba(37, 99, 235, 0.16)' : '#e0f2fe',
-                              border: '1px solid rgba(56, 189, 248, 0.45)',
-                              color: darkModeTheme ? '#7dd3fc' : '#0369a1',
-                              padding: '3px 10px',
-                              borderRadius: '9999px',
-                              fontSize: '11px',
-                              fontWeight: 700,
-                              fontFamily: 'monospace',
-                              cursor: 'pointer'
-                            }}
-                          >
-                            {tr('+ Connect', userPreferences.language)}
-                          </button>
-                        ) : null}
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    )}
 
-                  {/* Post Content */}
-                  {safeTrim(post.content) && (
-                    <div style={{ fontSize: '13.5px', fontFamily: 'monospace', lineHeight: 1.5, color: darkModeTheme ? '#f1f5f9' : '#0f172a', whiteSpace: 'pre-wrap' }}>
-                      {post.content}
-                    </div>
-                  )}
+                    {/* Official Welcome Broadcast Card vs Regular Post Body */}
+                    {isOfficialBroadcast ? (
+                      <div className="flex flex-col gap-3">
+                        <div>
+                          <h3
+                            className={`text-[15px] font-bold tracking-tight ${
+                              darkModeTheme ? 'text-white' : 'text-slate-900'
+                            }`}
+                            style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                          >
+                            Welcome to CHIXUS
+                          </h3>
+                          <p className={`mt-1 text-xs leading-relaxed ${darkModeTheme ? 'text-slate-300' : 'text-slate-600'}`}>
+                            Your technical intelligence and diagnostics platform for technicians, engineers and innovators.
+                          </p>
+                        </div>
+                        <OfficialWelcomeBanner onClick={() => setActiveTab('inspect')} />
+                      </div>
+                    ) : safeTrim(post.content) ? (
+                      <div
+                        className={`text-[13.5px] leading-relaxed whitespace-pre-wrap ${
+                          darkModeTheme ? 'text-slate-100' : 'text-slate-900'
+                        }`}
+                      >
+                        {post.content}
+                      </div>
+                    ) : null}
 
                   {/* LINKEDIN-STYLE EMBEDDED ORIGINAL POST CARD WHEN RESHARED */}
                   {post.resharedPost ? (
@@ -19716,41 +20057,6 @@ export function App() {
                     </div>
 
                     <input
-                      ref={chatFileInputRef}
-                      type="file"
-                      accept="image/*"
-                      style={{ display: 'none' }}
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) {
-                          const reader = new FileReader();
-                          reader.onload = async () => {
-                            const compressed = await compressImageDataUrl(reader.result as string, 640, 0.72);
-                            setChatImageAttachment(compressed);
-                          };
-                          reader.readAsDataURL(file);
-                        }
-                        e.target.value = '';
-                      }}
-                    />
-
-                    <input
-                      ref={chatDocInputRef}
-                      type="file"
-                      accept="*/*"
-                      style={{ display: 'none' }}
-                      onChange={async (e) => {
-                        const file = e.target.files?.[0];
-                        e.target.value = '';
-                        if (!file) return;
-                        triggerToast(`📁 Reading contents inside ${file.name}...`);
-                        const extracted = await extractFileAttachmentForAi(file);
-                        setChatFileAttachment(extracted);
-                        triggerToast(`✅ Ready: ${file.name} loaded for AI reading!`);
-                      }}
-                    />
-
-                    <input
                       type="text"
                       value={newChatText}
                       onChange={(e) => setNewChatText(e.target.value)}
@@ -21383,6 +21689,74 @@ export function App() {
           )}
 
         </main>
+        </div>
+
+        {/* RIGHT COLUMN (340px Qorvex Live Neural Core Panel - Desktop >= 1024px) */}
+        <DesktopQorvexPanel
+          contact={activeContact}
+          messages={activeConversation}
+          userName={userName}
+          userAvatar={avatarUrl}
+          newChatText={newChatText}
+          onChangeNewChatText={setNewChatText}
+          onSendMessage={handleSendMessage}
+          onBackToMessages={() => {
+            sound.playClick();
+            setActiveTab('messages');
+            setIsChatOpen(false);
+          }}
+          onOpenProfile={() => {
+            sound.playClick();
+            if (
+              activeContact.id === CHIXUS_AI_BOT_ID ||
+              activeContact.name === 'Qorvex' ||
+              activeContact.name === 'Qordex' ||
+              activeContact.name === 'CHIXUS AI'
+            ) {
+              openPeerProfile('Qorvex', CHIXUS_AI_BOT_ID);
+            } else {
+              const pNodeId = activeContact.id.startsWith('c-CHI-') ? activeContact.id.slice(2) : undefined;
+              openPeerProfile(activeContact.name, pNodeId);
+            }
+          }}
+          isAiTyping={isChixusAiTyping}
+          isAttachMenuOpen={isAttachMenuOpen}
+          onToggleAttachMenu={() => {
+            sound.playClick();
+            setIsAttachMenuOpen((prev) => !prev);
+          }}
+          onSelectVoiceAttach={handleStartVoiceNoteRecording}
+          onSelectCameraAttach={() => {
+            setIsAttachMenuOpen(false);
+            chatFileInputRef.current?.click();
+          }}
+          onSelectFileAttach={() => {
+            setIsAttachMenuOpen(false);
+            chatDocInputRef.current?.click();
+          }}
+          chatImageAttachment={chatImageAttachment}
+          chatVoiceNoteAttachment={chatVoiceNoteAttachment}
+          chatFileAttachment={chatFileAttachment}
+          onClearImageAttachment={() => setChatImageAttachment(null)}
+          onClearVoiceAttachment={() => setChatVoiceNoteAttachment(null)}
+          onClearFileAttachment={() => setChatFileAttachment(null)}
+          speakingChatMsgId={speakingChatMsgId}
+          onToggleSpeakMessage={(msgId, text) => {
+            sound.playClick();
+            if (speakingChatMsgId === msgId) {
+              stopTribeVoice();
+              setSpeakingChatMsgId(null);
+            } else {
+              stopTribeVoice();
+              setSpeakingPostId(null);
+              setSpeakingChatMsgId(msgId);
+              const bcp47 = activeTribeDiagnostics.bcp47 || 'en-US';
+              speakTribeNarrative(text, bcp47, () => setSpeakingChatMsgId(null));
+            }
+          }}
+          scrollRef={desktopChatScrollRef}
+        />
+      </div>
 
         {/* Global Toast Feedback Banner */}
         {toastFeedback && (
@@ -28178,11 +28552,12 @@ export function App() {
           }}
         />
 
-        {/* Floating Quick-Post Action Button on Bottom-Left for seamless posting: only shown after scrolling past posting area */}
+        {/* Floating Quick-Post Action Button on Bottom-Left for mobile scrolling */}
         {activeTab === 'feed' && showFloatingPostBtn && (
           <button
             type="button"
             id="floating-quick-post-btn"
+            className="lg:hidden"
             onClick={() => {
               sound.playClick();
               if (!requireAuthForAction('feed', 'create_post')) return;
@@ -28226,7 +28601,6 @@ export function App() {
             <Plus style={{ width: '24px', height: '24px', color: '#ffffff', strokeWidth: 3 }} />
           </button>
         )}
-      </div>
     </div>
   );
 }

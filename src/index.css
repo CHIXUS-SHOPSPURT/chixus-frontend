@@ -10,7 +10,7 @@
 
   body {
     font-family: var(--font-body);
-    background-color: #080a0f;
+    background-color: #070b12;
     color: #e2e8f0;
   }
 }
@@ -507,89 +507,165 @@
   }
 
   .chixus-splash-aura,
-  .chixus-goo-orbit,
+  .chixus-splash-swirl,
+  .chixus-splash-mist,
+  .chixus-splash-entrance,
+  .chixus-cardiac-core,
+  .chixus-acoustic-ripple-a,
+  .chixus-acoustic-ripple-b,
   .chixus-splash-sheen,
-  .chixus-splash-logo-stage,
+  .chixus-harmonic-dot-1,
+  .chixus-harmonic-dot-2,
+  .chixus-harmonic-dot-3,
   .chixus-splash-logo-ready {
     animation: none !important;
     transform: none !important;
+    filter: none !important;
   }
 }
 
 /* =========================================================
-   CHIXUS Liquid-Goo Loading Splash Animations
+   CHIXUS Cardiac Pulse & Luminous Swirl Splash Animations
+   Strictly GPU-composited (transform, opacity, filter)
+   5.20s continuous loop @ 120% motion energy
    ========================================================= */
-@keyframes chixusSplashAuraBreath {
-  0%, 100% {
-    transform: scale(0.94);
-    opacity: 0.55;
-  }
-  50% {
-    transform: scale(1.08);
-    opacity: 0.9;
-  }
-}
-
-@keyframes chixusGooOrbitA {
-  0% {
-    transform: rotate(0deg) translateX(64px) scale(0.95);
-  }
-  50% {
-    transform: rotate(180deg) translateX(74px) scale(1.12);
-  }
-  100% {
-    transform: rotate(360deg) translateX(64px) scale(0.95);
-  }
-}
-
-@keyframes chixusGooOrbitB {
-  0% {
-    transform: rotate(90deg) translateX(68px) scale(1.05);
-  }
-  50% {
-    transform: rotate(270deg) translateX(58px) scale(0.88);
-  }
-  100% {
-    transform: rotate(450deg) translateX(68px) scale(1.05);
-  }
-}
-
-@keyframes chixusGooOrbitC {
-  0% {
-    transform: rotate(180deg) translateX(62px) scale(0.9);
-  }
-  50% {
-    transform: rotate(360deg) translateX(72px) scale(1.08);
-  }
-  100% {
-    transform: rotate(540deg) translateX(62px) scale(0.9);
-  }
-}
-
-@keyframes chixusGooOrbitD {
-  0% {
-    transform: rotate(270deg) translateX(70px) scale(1);
-  }
-  50% {
-    transform: rotate(450deg) translateX(60px) scale(0.92);
-  }
-  100% {
-    transform: rotate(630deg) translateX(70px) scale(1);
-  }
-}
-
-@keyframes chixusSplashReveal {
+@keyframes chixusSplashEntranceSpring {
   0% {
     opacity: 0;
-    transform: perspective(600px) rotateX(8deg) rotateY(-8deg) scale(0.82);
+    transform: scale(0.76);
+    filter: blur(8px);
   }
   65% {
     opacity: 1;
-    transform: perspective(600px) rotateX(-2deg) rotateY(3deg) scale(1.03);
+    transform: scale(1.03);
+    filter: blur(0px);
   }
   100% {
     opacity: 1;
-    transform: perspective(600px) rotateX(2deg) rotateY(-2deg) scale(1);
+    transform: scale(1);
+    filter: blur(0px);
+  }
+}
+
+@keyframes chixusLuminousSwirl {
+  0% {
+    transform: rotate(0deg) scale(0.96);
+    opacity: 0.78;
+  }
+  50% {
+    transform: rotate(180deg) scale(1.09);
+    opacity: 1;
+  }
+  100% {
+    transform: rotate(360deg) scale(0.96);
+    opacity: 0.78;
+  }
+}
+
+@keyframes chixusMistBreath {
+  0%, 100% {
+    transform: scale(0.92);
+    opacity: 0.42;
+  }
+  20% {
+    transform: scale(1.12);
+    opacity: 0.78;
+  }
+  55% {
+    transform: scale(0.98);
+    opacity: 0.52;
+  }
+}
+
+/* Asymmetric lub-dub cardiac scale curve (5.20s loop @ 120% motion energy) */
+@keyframes chixusCardiacLubDub {
+  0% {
+    transform: scale(1);
+  }
+  7% {
+    transform: scale(1.105);
+  }
+  13% {
+    transform: scale(0.985);
+  }
+  19% {
+    transform: scale(1.068);
+  }
+  28% {
+    transform: scale(0.995);
+  }
+  42% {
+    transform: scale(1);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes chixusAcousticRippleLub {
+  0% {
+    transform: scale(0.92);
+    opacity: 0;
+  }
+  6% {
+    transform: scale(1.02);
+    opacity: 0.72;
+  }
+  38% {
+    transform: scale(1.88);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.88);
+    opacity: 0;
+  }
+}
+
+@keyframes chixusAcousticRippleDub {
+  0%, 14% {
+    transform: scale(0.92);
+    opacity: 0;
+  }
+  20% {
+    transform: scale(1.02);
+    opacity: 0.65;
+  }
+  56% {
+    transform: scale(2.05);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(2.05);
+    opacity: 0;
+  }
+}
+
+@keyframes chixusSplashSheenSweep {
+  0%, 6% {
+    transform: translate3d(-145%, 0, 0) rotate(24deg);
+    opacity: 0;
+  }
+  16% {
+    opacity: 0.55;
+  }
+  34% {
+    transform: translate3d(165%, 0, 0) rotate(24deg);
+    opacity: 0;
+  }
+  100% {
+    transform: translate3d(165%, 0, 0) rotate(24deg);
+    opacity: 0;
+  }
+}
+
+@keyframes chixusHarmonicBreathDot {
+  0%, 100% {
+    transform: scale(0.82);
+    opacity: 0.45;
+  }
+  50% {
+    transform: scale(1.24);
+    opacity: 1;
   }
 }
 
@@ -598,68 +674,73 @@
     transform: scale(1);
   }
   45% {
-    transform: scale(1.09);
+    transform: scale(1.06);
   }
   100% {
     transform: scale(1);
   }
 }
 
-@keyframes chixusSplashSheenSweep {
-  0% {
-    transform: translateX(-140%) rotate(22deg);
-    opacity: 0;
-  }
-  20% {
-    opacity: 0.45;
-  }
-  55% {
-    transform: translateX(150%) rotate(22deg);
-    opacity: 0;
-  }
-  100% {
-    transform: translateX(150%) rotate(22deg);
-    opacity: 0;
-  }
+.chixus-splash-entrance {
+  animation: chixusSplashEntranceSpring 0.72s cubic-bezier(0.22, 1.28, 0.36, 1) forwards;
+  will-change: transform, opacity, filter;
 }
 
-.chixus-splash-aura {
-  animation: chixusSplashAuraBreath 2.8s ease-in-out infinite;
+.chixus-splash-swirl {
+  animation: chixusLuminousSwirl 5.20s linear infinite;
+  will-change: transform, opacity;
 }
 
-.chixus-goo-orbit-1 {
-  animation: chixusGooOrbitA 2.69s linear infinite;
+.chixus-splash-mist {
+  animation: chixusMistBreath 5.20s ease-in-out infinite;
+  will-change: transform, opacity;
 }
 
-.chixus-goo-orbit-2 {
-  animation: chixusGooOrbitB 2.69s linear infinite;
+.chixus-cardiac-core {
+  animation: chixusCardiacLubDub 5.20s cubic-bezier(0.25, 0.85, 0.35, 1) infinite;
+  will-change: transform;
 }
 
-.chixus-goo-orbit-3 {
-  animation: chixusGooOrbitC 2.69s linear infinite;
+.chixus-acoustic-ripple-a {
+  animation: chixusAcousticRippleLub 5.20s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+  will-change: transform, opacity;
 }
 
-.chixus-goo-orbit-4 {
-  animation: chixusGooOrbitD 2.69s linear infinite;
-}
-
-.chixus-splash-logo-stage {
-  animation: chixusSplashReveal 0.65s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+.chixus-acoustic-ripple-b {
+  animation: chixusAcousticRippleDub 5.20s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+  will-change: transform, opacity;
 }
 
 .chixus-splash-logo-ready {
-  animation: chixusSplashSettlePop 0.36s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+  animation: chixusSplashSettlePop 0.32s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
 }
 
 .chixus-splash-sheen {
   background: linear-gradient(
     90deg,
     transparent 0%,
-    rgba(255, 255, 255, 0.24) 50%,
+    rgba(255, 255, 255, 0.34) 50%,
     transparent 100%
   );
-  animation: chixusSplashSheenSweep 2.4s ease-in-out infinite;
+  animation: chixusSplashSheenSweep 5.20s ease-in-out infinite;
+  will-change: transform, opacity;
 }
+
+.chixus-harmonic-dot-1 {
+  animation: chixusHarmonicBreathDot 1.6s ease-in-out 0s infinite;
+  will-change: transform, opacity;
+}
+
+.chixus-harmonic-dot-2 {
+  animation: chixusHarmonicBreathDot 1.6s ease-in-out 0.28s infinite;
+  will-change: transform, opacity;
+}
+
+.chixus-harmonic-dot-3 {
+  animation: chixusHarmonicBreathDot 1.6s ease-in-out 0.56s infinite;
+  will-change: transform, opacity;
+}
+
 
 
 
